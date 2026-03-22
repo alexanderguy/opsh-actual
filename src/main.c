@@ -3,6 +3,7 @@
 #include "exec/signal.h"
 #include "format/format.h"
 #include "foundation/util.h"
+#include "lint/lint.h"
 #include "lsp/lsp.h"
 #include "parser/parser.h"
 #include "vm/image_io.h"
@@ -158,6 +159,7 @@ static void usage(const char *progname)
     fprintf(stderr, "  <script>                  run a script\n");
     fprintf(stderr, "  build <script> [-o out]   compile to bytecode or standalone binary\n");
     fprintf(stderr, "  format [opts] [file...]   format shell scripts\n");
+    fprintf(stderr, "  lint [opts] [file...]     check scripts for common issues\n");
     fprintf(stderr, "  lsp                       start LSP server\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "options:\n");
@@ -267,6 +269,8 @@ int main(int argc, char *argv[])
             return lsp_main();
         } else if (strcmp(argv[i], "format") == 0 && i == 1) {
             return format_main(argc - 2, argv + 2);
+        } else if (strcmp(argv[i], "lint") == 0 && i == 1) {
+            return lint_main(argc - 2, argv + 2);
         } else if (strcmp(argv[i], "build") == 0 && i == 1) {
             do_build = 1;
         } else if (strcmp(argv[i], "--agent-stdio") == 0) {
