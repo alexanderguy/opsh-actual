@@ -9,6 +9,12 @@
 static void parser_error(parser_t *p, const char *msg)
 {
     fprintf(stderr, "opsh: %s:%u: %s\n", p->filename, p->lexer.lineno, msg);
+    if (p->error_count < MAX_PARSE_ERRORS) {
+        parse_error_t *e = &p->errors[p->error_count];
+        e->lineno = p->lexer.lineno;
+        e->message = xmalloc(strlen(msg) + 1);
+        strcpy(e->message, msg);
+    }
     p->error_count++;
 }
 
@@ -1150,6 +1156,13 @@ void parser_destroy(parser_t *p)
 {
     lexer_destroy(&p->lexer);
     arena_destroy(&p->arena);
+    {
+        int i;
+        int n = p->error_count < MAX_PARSE_ERRORS ? p->error_count : MAX_PARSE_ERRORS;
+        for (i = 0; i < n; i++) {
+            free(p->errors[i].message);
+        }
+    }
 }
 
 sh_list_t *parser_parse(parser_t *p)
