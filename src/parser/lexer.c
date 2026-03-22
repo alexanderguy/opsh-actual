@@ -13,6 +13,8 @@ static void *lexer_alloc(lexer_t *lex, size_t size)
     return arena_calloc(lex->arena, size);
 }
 
+/* Forward declaration for use in parameter expansion parsing */
+static word_part_t *parse_word_units(lexer_t *lex, bool in_dquote, bool in_heredoc, strbuf_t *raw);
 
 static void lexer_error(lexer_t *lex, const char *msg)
 {
@@ -195,18 +197,36 @@ static word_part_t *parse_param_expansion(lexer_t *lex)
             pe->index_all = true;
             lexer_advance(lex);
         } else {
-            /* Parse index expression as a word until ] */
+            /* Read index expression with bracket depth tracking */
             strbuf_t idx_str;
             strbuf_init(&idx_str);
-            while (lex->pos < lex->length && lexer_char(lex) != ']') {
-                strbuf_append_byte(&idx_str, lexer_char(lex));
+            int bracket_depth = 1;
+            while (lex->pos < lex->length && bracket_depth > 0) {
+                char ic = lexer_char(lex);
+                if (ic == '[') {
+                    bracket_depth++;
+                } else if (ic == ']') {
+                    bracket_depth--;
+                    if (bracket_depth == 0) {
+                        break;
+                    }
+                }
+                strbuf_append_byte(&idx_str, ic);
                 lexer_advance(lex);
             }
             if (idx_str.length > 0) {
-                word_part_t *idx_wu = xcalloc(1, sizeof(*idx_wu));
-                idx_wu->type = WP_LITERAL;
-                idx_wu->part.string = strbuf_detach(&idx_str);
-                pe->index = idx_wu;
+                /* Re-parse through a sub-lexer for variable expansion */
+                char *raw = strbuf_detach(&idx_str);
+                lexer_t sub;
+                lexer_init(&sub, raw, lex->filename);
+                pe->index = parse_word_units(&sub, true, true, NULL);
+                /* Clear quoted since this is not actually quoted */
+                word_part_t *wu;
+                for (wu = pe->index; wu != NULL; wu = wu->next) {
+                    wu->quoted = false;
+                }
+                lexer_destroy(&sub);
+                free(raw);
             }
             strbuf_destroy(&idx_str);
         }
@@ -719,7 +739,7 @@ static word_part_t *parse_word_units(lexer_t *lex, bool in_dquote, bool in_hered
             } else {
                 /* Empty quotes "": produce an empty WP_LITERAL so the
                  * word is recognized as a valid (empty) token. */
-                word_part_t *wu = xcalloc(1, sizeof(*wu));
+                word_part_t *wu = lexer_alloc(lex, sizeof(*wu));
                 wu->type = WP_LITERAL;
                 wu->quoted = true;
                 wu->part.string = xstrdup("");
