@@ -150,11 +150,19 @@ static int copy_file(const char *src, const char *dst)
 
 static void usage(const char *progname)
 {
-    fprintf(stderr, "usage: %s [options] <script>\n", progname);
-    fprintf(stderr, "       %s build <script.opsh> -o <output.opsb>\n", progname);
-    fprintf(stderr, "       %s format [options] [file...]\n", progname);
+    fprintf(stderr, "opsh - shell for ops automation\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "usage: %s <command> [options]\n", progname);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "commands:\n");
+    fprintf(stderr, "  <script>                  run a script\n");
+    fprintf(stderr, "  build <script> [-o out]   compile to bytecode or standalone binary\n");
+    fprintf(stderr, "  format [opts] [file...]   format shell scripts\n");
+    fprintf(stderr, "  lsp                       start LSP server\n");
+    fprintf(stderr, "\n");
     fprintf(stderr, "options:\n");
     fprintf(stderr, "  --agent-stdio   emit JSON-RPC events to stderr\n");
+    fprintf(stderr, "  -h, --help      show this help\n");
 }
 
 /* Compile a .opsh script to a bytecode image */

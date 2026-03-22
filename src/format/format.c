@@ -784,11 +784,19 @@ static char *format_source(const char *source, const char *filename, const forma
 static void format_usage(void)
 {
     fprintf(stderr, "usage: opsh format [options] [file...]\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Format opsh scripts. With no files, reads from stdin.\n");
+    fprintf(stderr, "\n");
     fprintf(stderr, "options:\n");
-    fprintf(stderr, "  -w          write result to file instead of stdout\n");
-    fprintf(stderr, "  -d          show diff when formatting differs\n");
-    fprintf(stderr, "  -l          list files whose formatting differs\n");
-    fprintf(stderr, "  -i N        indent width (0=tabs, default: 4)\n");
+    fprintf(stderr, "  -w       write result to file instead of stdout\n");
+    fprintf(stderr, "  -d       show unified diff of formatting changes\n");
+    fprintf(stderr, "  -l       list files whose formatting differs\n");
+    fprintf(stderr, "  -i N     indent width (0=tabs, default: 4)\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "exit codes:\n");
+    fprintf(stderr, "  0        no formatting changes (or success with -w)\n");
+    fprintf(stderr, "  1        formatting differs (with -d or -l)\n");
+    fprintf(stderr, "  2        error (parse failure, cannot read file)\n");
 }
 
 /* Process a single file. Returns 0 if unchanged/success, 1 if changed, 2 on error. */
