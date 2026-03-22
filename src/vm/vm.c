@@ -4,6 +4,7 @@
 #include "foundation/rcstr.h"
 #include "foundation/strbuf.h"
 #include "foundation/util.h"
+#include "parser/ast.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -292,6 +293,208 @@ int vm_run(vm_t *vm)
             }
             break;
         }
+
+        case OP_EXPAND_PARAM: {
+            uint16_t name_idx = read_u16(vm);
+            uint8_t op = read_u8(vm);
+            uint8_t flags = read_u8(vm);
+            const char *name = vm->image->const_pool[name_idx];
+
+            /* ${#var} -- string length */
+            if (flags & PE_STRLEN) {
+                variable_t *var = environ_get(vm->env, name);
+                if (var != NULL && var->value.type == VT_STRING) {
+                    size_t len = utf8_strlen(var->value.data.string);
+                    char buf[32];
+                    snprintf(buf, sizeof(buf), "%zu", len);
+                    vm_push(vm, value_string(rcstr_new(buf)));
+                } else {
+                    vm_push(vm, value_string(rcstr_new("0")));
+                }
+                break;
+            }
+
+            variable_t *var = environ_get(vm->env, name);
+            char *var_val = NULL;
+            bool is_set = (var != NULL && var->value.type != VT_NONE);
+            bool is_empty =
+                !is_set || (var->value.type == VT_STRING && var->value.data.string[0] == '\0');
+            bool use_colon = (flags & PE_COLON) != 0;
+            /* With colon: check set AND non-empty. Without: check set only. */
+            bool condition = use_colon ? (is_set && !is_empty) : is_set;
+
+            if (is_set) {
+                var_val = value_to_string(&var->value);
+            }
+
+            switch ((param_exp_type_t)op) {
+            case PE_NONE: {
+                /* Simple ${var} */
+                if (var_val != NULL) {
+                    vm_push(vm, value_string(var_val));
+                } else {
+                    vm_push(vm, value_string(rcstr_new("")));
+                }
+                break;
+            }
+            case PE_DEFAULT: {
+                /* ${var:-word} or ${var-word} */
+                value_t word = vm_pop(vm);
+                if (condition) {
+                    value_destroy(&word);
+                    vm_push(vm, value_string(var_val));
+                } else {
+                    rcstr_release(var_val);
+                    vm_push(vm, word);
+                }
+                break;
+            }
+            case PE_ALTERNATE: {
+                /* ${var:+word} or ${var+word} */
+                value_t word = vm_pop(vm);
+                if (condition) {
+                    rcstr_release(var_val);
+                    vm_push(vm, word);
+                } else {
+                    value_destroy(&word);
+                    if (var_val != NULL) {
+                        vm_push(vm, value_string(var_val));
+                    } else {
+                        vm_push(vm, value_string(rcstr_new("")));
+                    }
+                }
+                break;
+            }
+            case PE_ASSIGN: {
+                /* ${var:=word} or ${var=word} */
+                value_t word = vm_pop(vm);
+                if (condition) {
+                    value_destroy(&word);
+                    vm_push(vm, value_string(var_val));
+                } else {
+                    rcstr_release(var_val);
+                    char *assigned = value_to_string(&word);
+                    environ_set(vm->env, name, word);
+                    vm_push(vm, value_string(assigned));
+                }
+                break;
+            }
+            case PE_ERROR: {
+                /* ${var:?word} or ${var?word} */
+                value_t word = vm_pop(vm);
+                if (condition) {
+                    value_destroy(&word);
+                    vm_push(vm, value_string(var_val));
+                } else {
+                    rcstr_release(var_val);
+                    char *msg = value_to_string(&word);
+                    fprintf(stderr, "opsh: %s: %s\n", name, msg);
+                    rcstr_release(msg);
+                    value_destroy(&word);
+                    vm->laststatus = 1;
+                    vm->halted = true;
+                    vm_push(vm, value_string(rcstr_new("")));
+                }
+                break;
+            }
+            case PE_TRIM: {
+                /* ${var#pat}, ${var##pat}, ${var%pat}, ${var%%pat} */
+                value_t pattern = vm_pop(vm);
+                /* Pattern matching is deferred; for now just return the value */
+                value_destroy(&pattern);
+                if (var_val != NULL) {
+                    vm_push(vm, value_string(var_val));
+                } else {
+                    vm_push(vm, value_string(rcstr_new("")));
+                }
+                break;
+            }
+            case PE_REPLACE: {
+                /* ${var/pat/rep} or ${var//pat/rep} */
+                value_t replacement = vm_pop(vm);
+                value_t pattern = vm_pop(vm);
+                /* Substitution is deferred; for now just return the value */
+                value_destroy(&pattern);
+                value_destroy(&replacement);
+                if (var_val != NULL) {
+                    vm_push(vm, value_string(var_val));
+                } else {
+                    vm_push(vm, value_string(rcstr_new("")));
+                }
+                break;
+            }
+            }
+            break;
+        }
+
+        case OP_EXPAND_ARITH: {
+            value_t expr_val = vm_pop(vm);
+            char *expr_str = value_to_string(&expr_val);
+            value_destroy(&expr_val);
+
+            /* Simple integer arithmetic evaluator */
+            /* For now, handle simple integer literals and basic +,-,*,/ */
+            int64_t result = 0;
+            char *p = expr_str;
+            char *endp;
+
+            /* Skip whitespace */
+            while (*p == ' ' || *p == '\t') {
+                p++;
+            }
+
+            if (*p != '\0') {
+                result = strtoll(p, &endp, 10);
+                /* Handle basic binary operations */
+                while (*endp != '\0') {
+                    while (*endp == ' ' || *endp == '\t') {
+                        endp++;
+                    }
+                    char oper = *endp;
+                    if (oper != '+' && oper != '-' && oper != '*' && oper != '/' && oper != '%') {
+                        break;
+                    }
+                    endp++;
+                    while (*endp == ' ' || *endp == '\t') {
+                        endp++;
+                    }
+                    int64_t rhs = strtoll(endp, &endp, 10);
+                    switch (oper) {
+                    case '+':
+                        result += rhs;
+                        break;
+                    case '-':
+                        result -= rhs;
+                        break;
+                    case '*':
+                        result *= rhs;
+                        break;
+                    case '/':
+                        if (rhs != 0) {
+                            result /= rhs;
+                        }
+                        break;
+                    case '%':
+                        if (rhs != 0) {
+                            result %= rhs;
+                        }
+                        break;
+                    }
+                }
+            }
+
+            rcstr_release(expr_str);
+
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%lld", (long long)result);
+            vm_push(vm, value_string(rcstr_new(buf)));
+            break;
+        }
+
+        case OP_QUOTE_REMOVE:
+        case OP_EXPAND_TILDE:
+            /* These are handled at compile time for now; no-ops at runtime */
+            break;
 
         case OP_JMP: {
             int32_t offset = read_i32(vm);
