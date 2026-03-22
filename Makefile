@@ -24,11 +24,12 @@ BUILTIN_SRCS = src/builtins/builtins.c
 COMPILER_SRCS = src/compiler/compiler.c
 AGENT_SRCS = src/agent/event.c
 FORMAT_SRCS = src/format/format.c
+LINT_SRCS = src/lint/lint.c
 LSP_SRCS = src/lsp/lsp.c
 MAIN_SRCS = src/main.c
 
 ALL_SRCS = $(FOUNDATION_SRCS) $(PARSER_SRCS) $(VM_SRCS) $(EXEC_SRCS) \
-           $(BUILTIN_SRCS) $(COMPILER_SRCS) $(AGENT_SRCS) $(FORMAT_SRCS) $(LSP_SRCS) $(MAIN_SRCS)
+           $(BUILTIN_SRCS) $(COMPILER_SRCS) $(AGENT_SRCS) $(FORMAT_SRCS) $(LINT_SRCS) $(LSP_SRCS) $(MAIN_SRCS)
 ALL_OBJS = $(ALL_SRCS:src/%.c=$(BUILD)/%.o)
 DEPS = $(ALL_OBJS:.o=.d)
 
@@ -41,11 +42,12 @@ BUILTIN_OBJS = $(BUILTIN_SRCS:src/%.c=$(BUILD)/%.o)
 COMPILER_OBJS = $(COMPILER_SRCS:src/%.c=$(BUILD)/%.o)
 AGENT_OBJS = $(AGENT_SRCS:src/%.c=$(BUILD)/%.o)
 FORMAT_OBJS = $(FORMAT_SRCS:src/%.c=$(BUILD)/%.o)
+LINT_OBJS = $(LINT_SRCS:src/%.c=$(BUILD)/%.o)
 LSP_OBJS = $(LSP_SRCS:src/%.c=$(BUILD)/%.o)
 
 # All non-main objects (for test linking)
 LIB_OBJS = $(FOUNDATION_OBJS) $(PARSER_OBJS) $(VM_OBJS) $(EXEC_OBJS) \
-           $(BUILTIN_OBJS) $(COMPILER_OBJS) $(AGENT_OBJS) $(FORMAT_OBJS) $(LSP_OBJS)
+           $(BUILTIN_OBJS) $(COMPILER_OBJS) $(AGENT_OBJS) $(FORMAT_OBJS) $(LINT_OBJS) $(LSP_OBJS)
 
 # Test sources
 TEST_TAP_SRC = tests/test_tap.c
@@ -57,6 +59,7 @@ TEST_PARSER_SRCS = tests/parser/test_lexer.c tests/parser/test_parser.c
 TEST_VM_SRCS = tests/vm/test_vm.c tests/vm/test_variable.c
 TEST_COMPILER_SRCS = tests/compiler/test_compiler.c
 TEST_FORMAT_SRCS = tests/format/test_format.c
+TEST_LINT_SRCS = tests/lint/test_lint.c
 
 TEST_TAP_BIN = $(BUILD)/tests/test_tap
 TEST_FOUNDATION_BINS = $(TEST_FOUNDATION_SRCS:tests/%.c=$(BUILD)/tests/%)
@@ -64,6 +67,7 @@ TEST_PARSER_BINS = $(TEST_PARSER_SRCS:tests/%.c=$(BUILD)/tests/%)
 TEST_VM_BINS = $(TEST_VM_SRCS:tests/%.c=$(BUILD)/tests/%)
 TEST_COMPILER_BINS = $(TEST_COMPILER_SRCS:tests/%.c=$(BUILD)/tests/%)
 TEST_FORMAT_BINS = $(TEST_FORMAT_SRCS:tests/%.c=$(BUILD)/tests/%)
+TEST_LINT_BINS = $(TEST_LINT_SRCS:tests/%.c=$(BUILD)/tests/%)
 
 # Fuzz targets (require LLVM clang with libfuzzer; Apple clang does not include it)
 # Usage: make fuzz-build FUZZ_CC=/opt/homebrew/opt/llvm/bin/clang
@@ -72,7 +76,8 @@ FUZZ_PARSER_BIN = $(BUILD)/fuzz/fuzz_parser
 FUZZ_COMPILE_BIN = $(BUILD)/fuzz/fuzz_compile
 FUZZ_IMAGE_BIN = $(BUILD)/fuzz/fuzz_image
 FUZZ_FORMAT_BIN = $(BUILD)/fuzz/fuzz_format
-FUZZ_BINS = $(FUZZ_PARSER_BIN) $(FUZZ_COMPILE_BIN) $(FUZZ_IMAGE_BIN) $(FUZZ_FORMAT_BIN)
+FUZZ_LINT_BIN = $(BUILD)/fuzz/fuzz_lint
+FUZZ_BINS = $(FUZZ_PARSER_BIN) $(FUZZ_COMPILE_BIN) $(FUZZ_IMAGE_BIN) $(FUZZ_FORMAT_BIN) $(FUZZ_LINT_BIN)
 
 FUZZ_CFLAGS = -std=c99 -Wall -Wextra -Werror -pedantic -Iinclude -Isrc \
               -fsanitize=fuzzer,address,undefined -g -O1
@@ -82,7 +87,7 @@ FUZZ_LDFLAGS = -fsanitize=fuzzer,address,undefined
 FUZZ_LIB_OBJS = $(LIB_OBJS:$(BUILD)/%=$(BUILD)/fuzz-objs/%)
 
 .PHONY: all clean test test-tap test-foundation test-parser test-vm test-compiler \
-        test-format format format-check fuzz-build
+        test-format test-lint format format-check fuzz-build
 
 all: $(BINARY)
 
@@ -119,7 +124,7 @@ $(BUILD)/tests/format/%: tests/format/%.c tests/tap.h $(LIB_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJS)
 
-test: test-tap test-foundation test-parser test-vm test-compiler test-format
+test: test-tap test-foundation test-parser test-vm test-compiler test-format test-lint
 
 test-tap: $(TEST_TAP_BIN)
 	$(TEST_TAP_BIN)
@@ -138,6 +143,13 @@ test-compiler: $(TEST_COMPILER_BINS)
 
 test-format: $(TEST_FORMAT_BINS)
 	@for t in $(TEST_FORMAT_BINS); do echo "# Running $$t"; $$t || exit 1; done
+
+$(BUILD)/tests/lint/%: tests/lint/%.c tests/tap.h $(LIB_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJS)
+
+test-lint: $(TEST_LINT_BINS)
+	@for t in $(TEST_LINT_BINS); do echo "# Running $$t"; $$t || exit 1; done
 
 # Fuzz-instrumented library objects (compiled with fuzzer sanitizer flags)
 $(BUILD)/fuzz-objs/%.o: src/%.c
@@ -158,6 +170,10 @@ $(FUZZ_IMAGE_BIN): fuzz/fuzz_image.c $(FUZZ_LIB_OBJS)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS)
 
 $(FUZZ_FORMAT_BIN): fuzz/fuzz_format.c $(FUZZ_LIB_OBJS)
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS)
+
+$(FUZZ_LINT_BIN): fuzz/fuzz_lint.c $(FUZZ_LIB_OBJS)
 	@mkdir -p $(dir $@)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS)
 
