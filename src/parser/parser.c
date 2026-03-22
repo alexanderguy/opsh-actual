@@ -1,5 +1,6 @@
 #include "parser/parser.h"
 
+#include "foundation/strbuf.h"
 #include "foundation/util.h"
 
 #include <stdio.h>
@@ -65,11 +66,16 @@ static bool expect(parser_t *p, token_type_t type)
     return true;
 }
 
-/* Skip newlines */
+static void drain_heredocs(parser_t *p);
+
+/* Skip newlines, draining any pending here-doc bodies first */
 static void skip_newlines(parser_t *p)
 {
     while (peek(p)->type == TOK_NEWLINE) {
         consume(p);
+        if (p->pending_heredoc_count > 0) {
+            drain_heredocs(p);
+        }
     }
 }
 
@@ -197,6 +203,106 @@ static cond_expr_t *parse_cond_expr_not(parser_t *p);
 static cond_expr_t *parse_cond_expr_primary(parser_t *p);
 
 /*
+ * Read here-document bodies from the source after a newline.
+ * For each pending here-doc, read lines until the delimiter is found,
+ * then store the body as heredoc_body on the redir node.
+ */
+static void drain_heredocs(parser_t *p)
+{
+    int i;
+    lexer_t *lex = &p->lexer;
+
+    for (i = 0; i < p->pending_heredoc_count; i++) {
+        pending_heredoc_t *ph = &p->pending_heredocs[i];
+        strbuf_t body;
+        strbuf_init(&body);
+        bool found = false;
+
+        while (lex->pos < lex->length) {
+            /* Find the start and end of the current line */
+            size_t line_start = lex->pos;
+            while (lex->pos < lex->length && lex->source[lex->pos] != '\n') {
+                lex->pos++;
+            }
+            size_t line_end = lex->pos;
+
+            /* Consume the newline if present */
+            if (lex->pos < lex->length && lex->source[lex->pos] == '\n') {
+                lex->pos++;
+                lex->lineno++;
+            }
+
+            /* Get the line content */
+            const char *line = lex->source + line_start;
+            size_t line_len = line_end - line_start;
+
+            /* For <<-, strip leading tabs from the line for comparison */
+            const char *cmp_line = line;
+            size_t cmp_len = line_len;
+            if (ph->strip_tabs) {
+                while (cmp_len > 0 && *cmp_line == '\t') {
+                    cmp_line++;
+                    cmp_len--;
+                }
+            }
+
+            /* Check if this line matches the delimiter */
+            size_t delim_len = strlen(ph->delimiter);
+            if (cmp_len == delim_len && memcmp(cmp_line, ph->delimiter, delim_len) == 0) {
+                found = true;
+                break;
+            }
+
+            /* For <<-, strip leading tabs from body lines */
+            if (ph->strip_tabs) {
+                const char *stripped = line;
+                size_t stripped_len = line_len;
+                while (stripped_len > 0 && *stripped == '\t') {
+                    stripped++;
+                    stripped_len--;
+                }
+                strbuf_append_bytes(&body, stripped, stripped_len);
+            } else {
+                strbuf_append_bytes(&body, line, line_len);
+            }
+            strbuf_append_byte(&body, '\n');
+        }
+
+        if (!found) {
+            parser_error(p, "here-document delimited by end of file");
+        }
+
+        /* Store the body on the redir node */
+        if (ph->expand && body.length > 0) {
+            /* Parse body for parameter expansion using lexer's
+             * double-quote-like mode (handles $VAR, ${VAR}, $(cmd), `) */
+            char *body_str = strbuf_detach(&body);
+            word_part_t *parsed = lexer_parse_heredoc_body(body_str, p->filename, &p->arena);
+            free(body_str);
+
+            if (parsed != NULL) {
+                ph->target->heredoc_body = parsed;
+            } else {
+                word_part_t *wu = xcalloc(1, sizeof(*wu));
+                wu->type = WP_LITERAL;
+                wu->part.string = xstrdup("");
+                ph->target->heredoc_body = wu;
+            }
+        } else {
+            /* Literal body (quoted delimiter or empty) */
+            word_part_t *wu = xcalloc(1, sizeof(*wu));
+            wu->type = WP_LITERAL;
+            wu->part.string = strbuf_detach(&body);
+            ph->target->heredoc_body = wu;
+        }
+
+        /* Store stripped delimiter for the formatter's closing line */
+        ph->target->heredoc_delim = ph->delimiter;
+    }
+    p->pending_heredoc_count = 0;
+}
+
+/*
  * Parse a complete program: list of and-or commands separated by ; or & or newline.
  */
 static sh_list_t *parse_list(parser_t *p)
@@ -221,6 +327,12 @@ static sh_list_t *parse_list(parser_t *p)
                 ao->background = true;
             }
             consume(p);
+            /* Drain pending here-doc bodies only after newlines, not after ;
+             * Per POSIX, here-doc bodies follow the newline that terminates
+             * the command line, not semicolons within the line. */
+            if (sep == TOK_NEWLINE && p->pending_heredoc_count > 0) {
+                drain_heredocs(p);
+            }
             skip_newlines(p);
         } else {
             break;
@@ -341,19 +453,75 @@ static io_redir_t *parse_redirection(parser_t *p)
         }
         /* Check if delimiter is quoted (any quoting disables expansion) */
         rd->heredoc_expand = true;
+        bool delim_quoted = false;
         if (tok.value != NULL) {
             const char *v = tok.value;
             while (*v) {
                 if (*v == '\'' || *v == '"' || *v == '\\') {
                     rd->heredoc_expand = false;
+                    delim_quoted = true;
                     break;
                 }
                 v++;
             }
         }
+
+        /* Strip quotes from delimiter for matching */
+        char *raw_delim = tok.value ? tok.value : xstrdup("");
+        char *stripped = NULL;
+        if (delim_quoted) {
+            strbuf_t sb;
+            strbuf_init(&sb);
+            const char *dp = raw_delim;
+            while (*dp) {
+                if (*dp == '\'') {
+                    dp++;
+                    while (*dp && *dp != '\'') {
+                        strbuf_append_byte(&sb, *dp++);
+                    }
+                    if (*dp == '\'') {
+                        dp++;
+                    }
+                } else if (*dp == '"') {
+                    dp++;
+                    while (*dp && *dp != '"') {
+                        if (*dp == '\\' && dp[1]) {
+                            dp++;
+                        }
+                        strbuf_append_byte(&sb, *dp++);
+                    }
+                    if (*dp == '"') {
+                        dp++;
+                    }
+                } else if (*dp == '\\' && dp[1]) {
+                    dp++;
+                    strbuf_append_byte(&sb, *dp++);
+                } else {
+                    strbuf_append_byte(&sb, *dp++);
+                }
+            }
+            stripped = strbuf_detach(&sb);
+        } else {
+            stripped = xstrdup(raw_delim);
+        }
+
+        /* Keep delimiter word for formatter */
         rd->target = tok.word;
         tok.word = NULL;
-        free(tok.value);
+
+        /* Queue pending here-doc */
+        if (p->pending_heredoc_count < MAX_PENDING_HEREDOCS) {
+            pending_heredoc_t *ph = &p->pending_heredocs[p->pending_heredoc_count++];
+            ph->delimiter = stripped;
+            ph->strip_tabs = (rd->type == REDIR_HEREDOC_STRIP);
+            ph->expand = rd->heredoc_expand;
+            ph->target = rd;
+        } else {
+            parser_error(p, "too many here-documents");
+            free(stripped);
+        }
+
+        free(raw_delim);
     } else {
         tok = next(p);
         if (!token_is_word(&tok)) {
@@ -1161,11 +1329,23 @@ void parser_destroy(parser_t *p)
             free(p->errors[i].message);
         }
     }
+    /* Free any undrained pending heredocs */
+    {
+        int i;
+        for (i = 0; i < p->pending_heredoc_count; i++) {
+            free(p->pending_heredocs[i].delimiter);
+        }
+        p->pending_heredoc_count = 0;
+    }
 }
 
 sh_list_t *parser_parse(parser_t *p)
 {
     sh_list_t *result = parse_list(p);
+    /* Drain any pending here-docs that weren't followed by a newline */
+    if (p->pending_heredoc_count > 0) {
+        drain_heredocs(p);
+    }
     if (peek(p)->type != TOK_EOF) {
         parser_error_unexpected(p, peek(p));
     }

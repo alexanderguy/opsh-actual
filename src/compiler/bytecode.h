@@ -116,6 +116,47 @@ typedef enum {
     SPECIAL_ZERO = 7,     /* $0 */
 } special_var_t;
 
+/* Test operation identifiers for OP_TEST_UNARY / OP_TEST_BINARY */
+typedef enum {
+    /* Unary file tests */
+    TEST_F = 0,   /* -f regular file */
+    TEST_D = 1,   /* -d directory */
+    TEST_E = 2,   /* -e exists */
+    TEST_S = 3,   /* -s non-empty */
+    TEST_R = 4,   /* -r readable */
+    TEST_W = 5,   /* -w writable */
+    TEST_X = 6,   /* -x executable */
+    TEST_L = 7,   /* -L / -h symlink */
+    TEST_P = 8,   /* -p pipe */
+    TEST_B = 9,   /* -b block device */
+    TEST_C = 10,  /* -c char device */
+    TEST_SS = 11, /* -S socket */
+    TEST_G = 12,  /* -g setgid */
+    TEST_U = 13,  /* -u setuid */
+    TEST_K = 14,  /* -k sticky */
+    TEST_O = 15,  /* -O owned by euid */
+    TEST_GG = 16, /* -G owned by egid */
+    TEST_T = 17,  /* -t fd is terminal */
+    TEST_NT = 18, /* -N modified since last read */
+    /* Unary string tests */
+    TEST_N = 20, /* -n non-empty string */
+    TEST_Z = 21, /* -z empty string */
+    /* Binary string tests */
+    TEST_SEQ = 30, /* == or = */
+    TEST_SNE = 31, /* != */
+    /* Binary numeric tests */
+    TEST_EQ = 40, /* -eq */
+    TEST_NE = 41, /* -ne */
+    TEST_LT = 42, /* -lt */
+    TEST_LE = 43, /* -le */
+    TEST_GT = 44, /* -gt */
+    TEST_GE = 45, /* -ge */
+    /* Binary file tests */
+    TEST_FNT = 50, /* -nt newer than */
+    TEST_FOT = 51, /* -ot older than */
+    TEST_FEF = 52, /* -ef same file */
+} test_op_t;
+
 /* EXEC_SIMPLE flags */
 #define EXEC_FLAG_FORK (1 << 0)
 #define EXEC_FLAG_CAPTURE_OUT (1 << 1)

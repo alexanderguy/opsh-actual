@@ -523,7 +523,7 @@ static word_part_t *parse_backtick(lexer_t *lex)
  *
  * If `in_dquote` is true, we are inside double quotes.
  */
-static word_part_t *parse_word_units(lexer_t *lex, bool in_dquote, strbuf_t *raw)
+static word_part_t *parse_word_units(lexer_t *lex, bool in_dquote, bool in_heredoc, strbuf_t *raw)
 {
     word_part_t *head = NULL;
     word_part_t **tail = &head;
@@ -548,7 +548,7 @@ static word_part_t *parse_word_units(lexer_t *lex, bool in_dquote, strbuf_t *raw
         char c = lexer_char(lex);
 
         if (in_dquote) {
-            if (c == '"') {
+            if (c == '"' && !in_heredoc) {
                 break; /* end of double-quoted section */
             }
             if (c == '\\') {
@@ -557,7 +557,7 @@ static word_part_t *parse_word_units(lexer_t *lex, bool in_dquote, strbuf_t *raw
                     strbuf_append_byte(raw, '\\');
                 }
                 c = lexer_char(lex);
-                if (c == '$' || c == '`' || c == '"' || c == '\\' || c == '\n') {
+                if (c == '$' || c == '`' || (!in_heredoc && c == '"') || c == '\\' || c == '\n') {
                     if (c != '\n') {
                         strbuf_append_byte(&literal, c);
                         if (raw) {
@@ -665,7 +665,7 @@ static word_part_t *parse_word_units(lexer_t *lex, bool in_dquote, strbuf_t *raw
             }
             lexer_advance(lex);
             /* Recursively parse double-quoted content */
-            word_part_t *dq = parse_word_units(lex, true, raw);
+            word_part_t *dq = parse_word_units(lex, true, false, raw);
             if (lexer_char(lex) == '"') {
                 if (raw) {
                     strbuf_append_byte(raw, '"');
@@ -964,7 +964,7 @@ static token_t lexer_read_token(lexer_t *lex)
         lex->lineno = save_lineno;
         strbuf_clear(&raw);
 
-        word_part_t *word = parse_word_units(lex, false, &raw);
+        word_part_t *word = parse_word_units(lex, false, false, &raw);
 
         if (word == NULL) {
             strbuf_destroy(&raw);
@@ -1147,4 +1147,22 @@ const char *token_type_name(token_type_t type)
         return "']]'";
     }
     return "unknown";
+}
+
+word_part_t *lexer_parse_heredoc_body(const char *body, const char *filename,
+                                     arena_t *arena)
+{
+    lexer_t lex;
+    lexer_init(&lex, body, filename);
+    lex.arena = arena;
+    word_part_t *result = parse_word_units(&lex, true, true, NULL);
+    lexer_destroy(&lex);
+
+    /* Clear quoted on all nodes -- here-doc content is not actually quoted,
+     * we only used dquote mode for the expansion rules. */
+    word_part_t *wu;
+    for (wu = result; wu != NULL; wu = wu->next) {
+        wu->quoted = false;
+    }
+    return result;
 }

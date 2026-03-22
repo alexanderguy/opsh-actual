@@ -123,9 +123,11 @@ struct io_redir {
     io_redir_type_t type;
     int fd;
     io_redir_t *next;
-    word_part_t *target; /* target filename or here-doc content */
-    bool heredoc_strip_tabs;         /* true if here-doc strips tabs */
-    bool heredoc_expand;      /* true if here-doc expands parameters */
+    word_part_t *target;    /* target filename or here-doc delimiter */
+    word_part_t *heredoc_body; /* here-doc body (NULL for non-heredoc redirs) */
+    char *heredoc_delim;         /* quote-stripped delimiter for closing line (owned) */
+    bool heredoc_strip_tabs;            /* true if here-doc strips tabs */
+    bool heredoc_expand;         /* true if here-doc expands parameters */
 };
 
 /*

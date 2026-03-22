@@ -60,6 +60,8 @@ void io_redir_free(io_redir_t *r)
     while (r != NULL) {
         io_redir_t *next = r->next;
         word_part_free(r->target);
+        word_part_free(r->heredoc_body);
+        free(r->heredoc_delim);
         free(r);
         r = next;
     }

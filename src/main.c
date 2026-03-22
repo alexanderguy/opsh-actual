@@ -177,10 +177,15 @@ static bytecode_image_t *compile_script(const char *path)
 }
 
 /* Execute a bytecode image */
-static int run_image(bytecode_image_t *img, const char *filename, int agent_stdio)
+static int run_image(bytecode_image_t *img, const char *filename, int agent_stdio, int script_argc,
+                     char **script_argv)
 {
     vm_t vm;
     vm_init(&vm, img);
+    vm.script_name = filename;
+    if (script_argc > 0 && script_argv != NULL) {
+        vm_set_args(&vm, script_argc, script_argv);
+    }
 
     event_sink_t *sink = NULL;
     if (agent_stdio) {
@@ -232,7 +237,7 @@ int main(int argc, char *argv[])
                     agent_stdio = 1;
                 }
             }
-            int status = run_image(img, argv[0], agent_stdio);
+            int status = run_image(img, argv[0], agent_stdio, argc - 1, argv + 1);
             image_free(img);
             return status;
         }
@@ -240,8 +245,10 @@ int main(int argc, char *argv[])
 
     const char *script_path = NULL;
     const char *output_path = NULL;
+    const char *c_string = NULL;
     int agent_stdio = 0;
     int do_build = 0;
+    int script_arg_start = 0; /* index of first script argument in argv */
     int i;
 
     for (i = 1; i < argc; i++) {
@@ -253,6 +260,22 @@ int main(int argc, char *argv[])
             return lint_main(argc - 2, argv + 2);
         } else if (strcmp(argv[i], "build") == 0 && i == 1) {
             do_build = 1;
+        } else if (strcmp(argv[i], "-c") == 0 && i + 1 < argc) {
+            c_string = argv[++i];
+            /* Per POSIX: remaining args are command_name ($0) then $1+ */
+            if (i + 1 < argc) {
+                script_arg_start = i + 1;
+            }
+            break;
+        } else if (strcmp(argv[i], "--") == 0) {
+            /* -- ends option parsing; next arg is the script, rest are args */
+            if (i + 1 < argc && script_path == NULL) {
+                script_path = argv[i + 1];
+                if (i + 2 < argc) {
+                    script_arg_start = i + 2;
+                }
+            }
+            break;
         } else if (strcmp(argv[i], "--agent-stdio") == 0) {
             agent_stdio = 1;
         } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
@@ -266,7 +289,43 @@ int main(int argc, char *argv[])
             return 1;
         } else if (script_path == NULL) {
             script_path = argv[i];
+            /* Remaining args after script path are script arguments */
+            if (!do_build && i + 1 < argc) {
+                script_arg_start = i + 1;
+                break;
+            }
         }
+    }
+
+    /* Compute script positional arguments once */
+    int sa_count = script_arg_start > 0 ? argc - script_arg_start : 0;
+    char **sa_args = script_arg_start > 0 ? argv + script_arg_start : NULL;
+
+    /* Handle -c mode */
+    if (c_string != NULL) {
+        signal_init();
+        parser_t p;
+        parser_init(&p, c_string, "-c");
+        sh_list_t *ast = parser_parse(&p);
+        if (parser_error_count(&p) > 0) {
+            fprintf(stderr, "opsh: parse errors in -c string\n");
+            sh_list_free(ast);
+            parser_destroy(&p);
+            return 2;
+        }
+        bytecode_image_t *img = compile(ast, "-c");
+        sh_list_free(ast);
+        parser_destroy(&p);
+        if (img == NULL) {
+            return 2;
+        }
+        /* Per POSIX: first arg after -c string is $0, rest are $1+ */
+        const char *c_name = (sa_count > 0) ? sa_args[0] : "opsh";
+        int c_argc = (sa_count > 1) ? sa_count - 1 : 0;
+        char **c_argv = (sa_count > 1) ? sa_args + 1 : NULL;
+        int status = run_image(img, c_name, agent_stdio, c_argc, c_argv);
+        image_free(img);
+        return status;
     }
 
     if (script_path == NULL) {
@@ -397,7 +456,7 @@ int main(int argc, char *argv[])
                 fprintf(stderr, "opsh: failed to load %s\n", script_path);
                 return 2;
             }
-            int status = run_image(img, script_path, agent_stdio);
+            int status = run_image(img, script_path, agent_stdio, sa_count, sa_args);
             image_free(img);
             return status;
         }
@@ -409,7 +468,7 @@ int main(int argc, char *argv[])
         return 2;
     }
 
-    int status = run_image(img, script_path, agent_stdio);
+    int status = run_image(img, script_path, agent_stdio, sa_count, sa_args);
     image_free(img);
 
     return status;

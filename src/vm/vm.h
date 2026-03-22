@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 #define VM_STACK_MAX 1024
 #define VM_CONST_POOL_MAX 65535
@@ -129,6 +130,10 @@ typedef struct vm {
     bool halted;
     bool return_requested; /* set by `return` builtin to trigger OP_RET */
 
+    const char *script_name; /* $0 */
+    pid_t last_bg_pid;       /* $! */
+    char option_flags[16];   /* $- */
+
     /* Trap handlers: command strings indexed by signal number.
      * NULL means default behavior, "" means ignore. */
     char *trap_handlers[32];
@@ -146,6 +151,9 @@ void vm_init(vm_t *vm, bytecode_image_t *image);
 
 /* Free VM resources (does not free the image) */
 void vm_destroy(vm_t *vm);
+
+/* Set positional parameters ($1..$N, $#) from command-line args */
+void vm_set_args(vm_t *vm, int argc, char **argv);
 
 /* Execute until HALT or error. Returns the exit status. */
 int vm_run(vm_t *vm);

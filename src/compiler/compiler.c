@@ -80,7 +80,7 @@ static void patch_jump(compiler_t *cc, size_t patch_pos)
 }
 
 /* Loop stack management */
-static void push_loop(compiler_t *cc, size_t continue_target)
+static void push_loop(compiler_t *cc, size_t continue_target, bool has_iterator)
 {
     if (cc->loop_depth >= MAX_LOOP_DEPTH) {
         compiler_error(cc, 0, "loop nesting too deep");
@@ -88,6 +88,7 @@ static void push_loop(compiler_t *cc, size_t continue_target)
     }
     loop_info_t *li = &cc->loop_stack[cc->loop_depth++];
     li->continue_target = continue_target;
+    li->has_iterator = has_iterator;
     plist_init(&li->break_patches);
 }
 
@@ -351,6 +352,11 @@ static bool is_literal_word(word_part_t *w)
     return w != NULL && w->type == WP_LITERAL && w->next == NULL;
 }
 
+static bool word_starts_with_tilde(word_part_t *w)
+{
+    return w != NULL && w->type == WP_LITERAL && !w->quoted && w->part.string[0] == '~';
+}
+
 static const char *literal_value(word_part_t *w)
 {
     return w->part.string;
@@ -413,6 +419,66 @@ static void compile_simple(compiler_t *cc, command_t *cmd)
     plist_t *assigns = &cmd->u.simple.assigns;
     plist_t *words = &cmd->u.simple.words;
 
+    /* Intercept break/continue */
+    if (words->length >= 1) {
+        word_part_t *cmd_word_0 = plist_get(words, 0);
+        if (is_literal_word(cmd_word_0)) {
+            const char *cmd_str = literal_value(cmd_word_0);
+            if (strcmp(cmd_str, "break") == 0 || strcmp(cmd_str, "continue") == 0) {
+                bool is_break = (cmd_str[0] == 'b');
+                int depth = 1;
+                if (words->length >= 2) {
+                    word_part_t *depth_word = plist_get(words, 1);
+                    if (is_literal_word(depth_word)) {
+                        char *endp;
+                        long d = strtol(literal_value(depth_word), &endp, 10);
+                        if (*endp != '\0' || d < 1) {
+                            compiler_error(cc, cmd->lineno,
+                                           is_break ? "break: invalid count"
+                                                    : "continue: invalid count");
+                            return;
+                        }
+                        if (d > cc->loop_depth) {
+                            depth = cc->loop_depth;
+                        } else {
+                            depth = (int)d;
+                        }
+                    }
+                }
+                if (cc->loop_depth <= 0) {
+                    compiler_error(cc, cmd->lineno,
+                                   is_break ? "break outside loop" : "continue outside loop");
+                    return;
+                }
+                /* Pop iterators for for-loops we're unwinding through.
+                 * Don't pop the target loop's iterator: break's own cleanup
+                 * handles it, and continue needs it to stay on the stack. */
+                {
+                    int target_depth = cc->loop_depth - depth;
+                    if (target_depth < 0) {
+                        target_depth = 0;
+                    }
+                    int d;
+                    for (d = cc->loop_depth - 1; d > target_depth; d--) {
+                        if (cc->loop_stack[d].has_iterator) {
+                            image_emit_u8(cc->image, OP_POP);
+                        }
+                    }
+                    loop_info_t *li = &cc->loop_stack[target_depth];
+                    if (is_break) {
+                        size_t *patch = xmalloc(sizeof(size_t));
+                        *patch = emit_jump(cc, OP_JMP);
+                        plist_add(&li->break_patches, patch);
+                    } else {
+                        size_t jmp = emit_jump(cc, OP_JMP);
+                        patch_jump_to(cc, jmp, li->continue_target);
+                    }
+                }
+                return;
+            }
+        }
+    }
+
     /* Intercept lib::import as a compile-time directive */
     if (words->length >= 2) {
         word_part_t *cmd_word = plist_get(words, 0);
@@ -447,6 +513,7 @@ static void compile_simple(compiler_t *cc, command_t *cmd)
             uint16_t name_idx = image_add_const(cc->image, name);
             free(name);
 
+            bool assign_tilde = (eq[1] == '~');
             if (w->next == NULL) {
                 const char *val = eq + 1;
                 uint16_t val_idx = image_add_const(cc->image, val);
@@ -466,6 +533,9 @@ static void compile_simple(compiler_t *cc, command_t *cmd)
                 }
             }
 
+            if (assign_tilde) {
+                image_emit_u8(cc->image, OP_EXPAND_TILDE);
+            }
             image_emit_u8(cc->image,
                           is_local_var(cc, cc->image->const_pool[name_idx]) ? OP_SET_LOCAL
                                                                             : OP_SET_VAR);
@@ -519,7 +589,9 @@ static void compile_simple(compiler_t *cc, command_t *cmd)
             case REDIR_HEREDOC_STRIP:
             case REDIR_HERESTR:
                 /* Push here-doc content, then REDIR_HERE */
-                if (rd->target != NULL) {
+                if (rd->heredoc_body != NULL) {
+                    compile_word(cc, rd->heredoc_body, cmd->lineno);
+                } else if (rd->target != NULL) {
                     compile_word(cc, rd->target, cmd->lineno);
                 } else {
                     uint16_t empty = image_add_const(cc->image, "");
@@ -541,6 +613,10 @@ static void compile_simple(compiler_t *cc, command_t *cmd)
     for (i = 0; i < words->length; i++) {
         word_part_t *w = plist_get(words, i);
         compile_word(cc, w, cmd->lineno);
+
+        if (word_starts_with_tilde(w)) {
+            image_emit_u8(cc->image, OP_EXPAND_TILDE);
+        }
 
         if (word_needs_split(w)) {
             image_emit_u8(cc->image, OP_SPLIT_FIELDS);
@@ -671,8 +747,8 @@ static void compile_for(compiler_t *cc, command_t *cmd)
     image_emit_u8(cc->image, OP_SET_VAR);
     image_emit_u16(cc->image, var_idx);
 
-    /* Register loop for break/continue */
-    push_loop(cc, loop_top);
+    /* Register loop for break/continue (for-loop has iterator on stack) */
+    push_loop(cc, loop_top, true);
 
     /* Compile body */
     compile_program(cc, cmd->u.for_clause.body);
@@ -681,15 +757,20 @@ static void compile_for(compiler_t *cc, command_t *cmd)
     size_t back_jump = emit_jump(cc, OP_JMP);
     patch_jump_to(cc, back_jump, loop_top);
 
-    /* Backpatch breaks to the cleanup code below */
+    /* Backpatch breaks to skip the VT_NONE pop and just clean up iterator */
     pop_loop(cc);
 
-    /* Patch exit jump to cleanup */
-    patch_jump(cc, exit_jump);
+    /* Break lands here: just pop the iterator */
+    {
+        size_t break_skip = emit_jump(cc, OP_JMP);
 
-    /* Pop the VT_NONE that DUP left */
-    image_emit_u8(cc->image, OP_POP);
-    /* Pop the iterator */
+        /* Normal exit lands here: pop the VT_NONE from DUP, then the iterator */
+        patch_jump(cc, exit_jump);
+        image_emit_u8(cc->image, OP_POP); /* Pop VT_NONE */
+
+        patch_jump(cc, break_skip);
+    }
+    /* Pop the iterator (both paths merge here) */
     image_emit_u8(cc->image, OP_POP);
 }
 
@@ -711,8 +792,8 @@ static void compile_while_until(compiler_t *cc, command_t *cmd, bool is_until)
         exit_jump = emit_jump(cc, OP_JMP_FALSE);
     }
 
-    /* Register loop for break/continue */
-    push_loop(cc, loop_top);
+    /* Register loop for break/continue (while/until has no iterator) */
+    push_loop(cc, loop_top, false);
 
     /* Compile body */
     compile_program(cc, cmd->u.while_clause.body);
@@ -985,6 +1066,197 @@ static void compile_funcdef(compiler_t *cc, command_t *cmd)
 }
 
 /*
+ * Map a test operator string to its numeric code.
+ */
+static int test_op_from_string(const char *op)
+{
+    /* Unary file tests */
+    if (strcmp(op, "-f") == 0)
+        return TEST_F;
+    if (strcmp(op, "-d") == 0)
+        return TEST_D;
+    if (strcmp(op, "-e") == 0)
+        return TEST_E;
+    if (strcmp(op, "-s") == 0)
+        return TEST_S;
+    if (strcmp(op, "-r") == 0)
+        return TEST_R;
+    if (strcmp(op, "-w") == 0)
+        return TEST_W;
+    if (strcmp(op, "-x") == 0)
+        return TEST_X;
+    if (strcmp(op, "-L") == 0 || strcmp(op, "-h") == 0)
+        return TEST_L;
+    if (strcmp(op, "-p") == 0)
+        return TEST_P;
+    if (strcmp(op, "-b") == 0)
+        return TEST_B;
+    if (strcmp(op, "-c") == 0)
+        return TEST_C;
+    if (strcmp(op, "-S") == 0)
+        return TEST_SS;
+    if (strcmp(op, "-g") == 0)
+        return TEST_G;
+    if (strcmp(op, "-u") == 0)
+        return TEST_U;
+    if (strcmp(op, "-k") == 0)
+        return TEST_K;
+    if (strcmp(op, "-O") == 0)
+        return TEST_O;
+    if (strcmp(op, "-G") == 0)
+        return TEST_GG;
+    if (strcmp(op, "-t") == 0)
+        return TEST_T;
+    if (strcmp(op, "-N") == 0)
+        return TEST_NT;
+    /* Unary string tests */
+    if (strcmp(op, "-n") == 0)
+        return TEST_N;
+    if (strcmp(op, "-z") == 0)
+        return TEST_Z;
+    /* Binary string tests */
+    if (strcmp(op, "==") == 0 || strcmp(op, "=") == 0)
+        return TEST_SEQ;
+    if (strcmp(op, "!=") == 0)
+        return TEST_SNE;
+    /* Binary numeric tests */
+    if (strcmp(op, "-eq") == 0)
+        return TEST_EQ;
+    if (strcmp(op, "-ne") == 0)
+        return TEST_NE;
+    if (strcmp(op, "-lt") == 0)
+        return TEST_LT;
+    if (strcmp(op, "-le") == 0)
+        return TEST_LE;
+    if (strcmp(op, "-gt") == 0)
+        return TEST_GT;
+    if (strcmp(op, "-ge") == 0)
+        return TEST_GE;
+    /* Binary file tests */
+    if (strcmp(op, "-nt") == 0)
+        return TEST_FNT;
+    if (strcmp(op, "-ot") == 0)
+        return TEST_FOT;
+    if (strcmp(op, "-ef") == 0)
+        return TEST_FEF;
+    return -1;
+}
+
+/*
+ * Compile a [[ ]] expression tree.
+ */
+static void compile_cond_expr(compiler_t *cc, cond_expr_t *d, unsigned int lineno)
+{
+    if (d == NULL) {
+        return;
+    }
+
+    switch (d->type) {
+    case COND_STRING:
+        compile_word(cc, d->u.string.word, lineno);
+        image_emit_u8(cc->image, OP_TEST_UNARY);
+        image_emit_u8(cc->image, (uint8_t)TEST_N);
+        break;
+
+    case COND_UNARY: {
+        compile_word(cc, d->u.unary.arg, lineno);
+        int op = test_op_from_string(d->u.unary.op);
+        if (op < 0) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "unknown test operator: %s", d->u.unary.op);
+            compiler_error(cc, lineno, buf);
+            return;
+        }
+        image_emit_u8(cc->image, OP_TEST_UNARY);
+        image_emit_u8(cc->image, (uint8_t)op);
+        break;
+    }
+
+    case COND_BINARY: {
+        if (strcmp(d->u.binary.op, "=~") == 0) {
+            compiler_error(cc, lineno, "regex matching (=~) is not yet supported");
+            return;
+        }
+        compile_word(cc, d->u.binary.left, lineno);
+        compile_word(cc, d->u.binary.right, lineno);
+        int op = test_op_from_string(d->u.binary.op);
+        if (op < 0) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "unknown test operator: %s", d->u.binary.op);
+            compiler_error(cc, lineno, buf);
+            return;
+        }
+        image_emit_u8(cc->image, OP_TEST_BINARY);
+        image_emit_u8(cc->image, (uint8_t)op);
+        break;
+    }
+
+    case COND_AND: {
+        compile_cond_expr(cc, d->u.andor.left, lineno);
+        size_t skip = emit_jump(cc, OP_JMP_FALSE);
+        compile_cond_expr(cc, d->u.andor.right, lineno);
+        patch_jump(cc, skip);
+        break;
+    }
+
+    case COND_OR: {
+        compile_cond_expr(cc, d->u.andor.left, lineno);
+        size_t skip = emit_jump(cc, OP_JMP_TRUE);
+        compile_cond_expr(cc, d->u.andor.right, lineno);
+        patch_jump(cc, skip);
+        break;
+    }
+
+    case COND_NOT:
+        compile_cond_expr(cc, d->u.not.child, lineno);
+        image_emit_u8(cc->image, OP_NEGATE_STATUS);
+        break;
+    }
+}
+
+static void compile_bracket(compiler_t *cc, command_t *cmd)
+{
+    /* Handle redirections if present */
+    if (cmd->redirs != NULL) {
+        image_emit_u8(cc->image, OP_REDIR_SAVE);
+        io_redir_t *rd;
+        for (rd = cmd->redirs; rd != NULL; rd = rd->next) {
+            switch (rd->type) {
+            case REDIR_IN:
+            case REDIR_OUT:
+            case REDIR_APPEND:
+            case REDIR_CLOBBER:
+            case REDIR_RDWR:
+                compile_word(cc, rd->target, cmd->lineno);
+                image_emit_u8(cc->image, OP_REDIR_OPEN);
+                image_emit_u8(cc->image, (uint8_t)rd->fd);
+                image_emit_u8(cc->image, (uint8_t)rd->type);
+                break;
+            case REDIR_DUPIN:
+            case REDIR_DUPOUT:
+                compile_word(cc, rd->target, cmd->lineno);
+                image_emit_u8(cc->image, OP_REDIR_DUP);
+                image_emit_u8(cc->image, (uint8_t)rd->fd);
+                image_emit_u8(cc->image, 0);
+                break;
+            case REDIR_CLOSE:
+                image_emit_u8(cc->image, OP_REDIR_CLOSE);
+                image_emit_u8(cc->image, (uint8_t)rd->fd);
+                break;
+            default:
+                break;
+            }
+        }
+    }
+
+    compile_cond_expr(cc, cmd->u.cond.expr, cmd->lineno);
+
+    if (cmd->redirs != NULL) {
+        image_emit_u8(cc->image, OP_REDIR_RESTORE);
+    }
+}
+
+/*
  * Compile a command node.
  */
 static void compile_command(compiler_t *cc, command_t *cmd)
@@ -1018,11 +1290,83 @@ static void compile_command(compiler_t *cc, command_t *cmd)
     case CT_FUNCDEF:
         compile_funcdef(cc, cmd);
         break;
-    case CT_SUBSHELL:
-        compiler_error(cc, cmd->lineno, "subshell not yet supported by compiler");
+    case CT_SUBSHELL: {
+        /* Emit redirections around the subshell (parent-side, before fork) */
+        bool has_redirs = (cmd->redirs != NULL);
+        if (has_redirs) {
+            image_emit_u8(cc->image, OP_REDIR_SAVE);
+            io_redir_t *rd;
+            for (rd = cmd->redirs; rd != NULL; rd = rd->next) {
+                switch (rd->type) {
+                case REDIR_IN:
+                case REDIR_OUT:
+                case REDIR_APPEND:
+                case REDIR_CLOBBER:
+                case REDIR_RDWR:
+                    compile_word(cc, rd->target, cmd->lineno);
+                    image_emit_u8(cc->image, OP_REDIR_OPEN);
+                    image_emit_u8(cc->image, (uint8_t)rd->fd);
+                    image_emit_u8(cc->image, (uint8_t)rd->type);
+                    break;
+                case REDIR_DUPIN:
+                case REDIR_DUPOUT:
+                    compile_word(cc, rd->target, cmd->lineno);
+                    image_emit_u8(cc->image, OP_REDIR_DUP);
+                    image_emit_u8(cc->image, (uint8_t)rd->fd);
+                    image_emit_u8(cc->image, 0);
+                    break;
+                case REDIR_CLOSE:
+                    image_emit_u8(cc->image, OP_REDIR_CLOSE);
+                    image_emit_u8(cc->image, (uint8_t)rd->fd);
+                    break;
+                case REDIR_HEREDOC:
+                case REDIR_HEREDOC_STRIP:
+                case REDIR_HERESTR:
+                    if (rd->heredoc_body != NULL) {
+                        compile_word(cc, rd->heredoc_body, cmd->lineno);
+                    } else if (rd->target != NULL) {
+                        compile_word(cc, rd->target, cmd->lineno);
+                    } else {
+                        uint16_t empty = image_add_const(cc->image, "");
+                        image_emit_u8(cc->image, OP_PUSH_CONST);
+                        image_emit_u16(cc->image, empty);
+                    }
+                    image_emit_u8(cc->image, OP_REDIR_HERE);
+                    image_emit_u8(cc->image, (uint8_t)rd->fd);
+                    image_emit_u8(cc->image, rd->heredoc_expand ? 1 : 0);
+                    break;
+                }
+            }
+        }
+
+        /* JMP over the sub-segment */
+        size_t skip_jump = emit_jump(cc, OP_JMP);
+        size_t sub_offset = cc->image->code_size;
+
+        /* Compile the subshell body */
+        compile_program(cc, cmd->u.group.body);
+        image_emit_u8(cc->image, OP_HALT);
+
+        /* Patch skip jump */
+        patch_jump(cc, skip_jump);
+
+        /* Emit OP_SUBSHELL with the sub-segment offset */
+        image_emit_u8(cc->image, OP_SUBSHELL);
+        {
+            uint32_t uoff = (uint32_t)sub_offset;
+            image_emit_u8(cc->image, (uint8_t)(uoff & 0xFF));
+            image_emit_u8(cc->image, (uint8_t)((uoff >> 8) & 0xFF));
+            image_emit_u8(cc->image, (uint8_t)((uoff >> 16) & 0xFF));
+            image_emit_u8(cc->image, (uint8_t)((uoff >> 24) & 0xFF));
+        }
+
+        if (has_redirs) {
+            image_emit_u8(cc->image, OP_REDIR_RESTORE);
+        }
         break;
+    }
     case CT_BRACKET:
-        compiler_error(cc, cmd->lineno, "[[ ]] not yet supported by compiler");
+        compile_bracket(cc, cmd);
         break;
     }
 }

@@ -350,10 +350,28 @@ static void format_redir(fmt_t *f, const io_redir_t *r)
         case REDIR_HEREDOC:
             emit(f, "<< ");
             format_word(f, r->target);
+            if (r->heredoc_body != NULL) {
+                emit(f, "\n");
+                format_word(f, r->heredoc_body);
+                if (r->heredoc_delim != NULL) {
+                    emit(f, r->heredoc_delim);
+                } else {
+                    format_word(f, r->target);
+                }
+            }
             break;
         case REDIR_HEREDOC_STRIP:
             emit(f, "<<- ");
             format_word(f, r->target);
+            if (r->heredoc_body != NULL) {
+                emit(f, "\n");
+                format_word(f, r->heredoc_body);
+                if (r->heredoc_delim != NULL) {
+                    emit(f, r->heredoc_delim);
+                } else {
+                    format_word(f, r->target);
+                }
+            }
             break;
         case REDIR_HERESTR:
             emit(f, "<<< ");

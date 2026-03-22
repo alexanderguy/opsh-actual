@@ -6,6 +6,7 @@
 #include "parser/lexer.h"
 
 #define MAX_PARSE_ERRORS 64
+#define MAX_PENDING_HEREDOCS 8
 
 /*
  * A collected parse error.
@@ -16,6 +17,16 @@ typedef struct {
 } parse_error_t;
 
 /*
+ * Pending here-document entry.
+ */
+typedef struct {
+    char *delimiter;    /* quote-stripped delimiter (owned) */
+    bool strip_tabs;    /* <<- mode */
+    bool expand;        /* expand parameters in body */
+    io_redir_t *target; /* redir node to fill in */
+} pending_heredoc_t;
+
+/*
  * Parser state
  */
 typedef struct {
@@ -24,6 +35,8 @@ typedef struct {
     int error_count;
     const char *filename;
     parse_error_t errors[MAX_PARSE_ERRORS];
+    pending_heredoc_t pending_heredocs[MAX_PENDING_HEREDOCS];
+    int pending_heredoc_count;
 } parser_t;
 
 /* Initialize a parser for the given source string */
