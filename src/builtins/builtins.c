@@ -644,6 +644,21 @@ static int signame_to_num(const char *name)
     if (strcmp(name, "QUIT") == 0 || strcmp(name, "SIGQUIT") == 0) {
         return SIGQUIT;
     }
+    if (strcmp(name, "KILL") == 0 || strcmp(name, "SIGKILL") == 0) {
+        return SIGKILL;
+    }
+    if (strcmp(name, "USR1") == 0 || strcmp(name, "SIGUSR1") == 0) {
+        return SIGUSR1;
+    }
+    if (strcmp(name, "USR2") == 0 || strcmp(name, "SIGUSR2") == 0) {
+        return SIGUSR2;
+    }
+    if (strcmp(name, "PIPE") == 0 || strcmp(name, "SIGPIPE") == 0) {
+        return SIGPIPE;
+    }
+    if (strcmp(name, "ALRM") == 0 || strcmp(name, "SIGALRM") == 0) {
+        return SIGALRM;
+    }
     /* Try numeric */
     char *endp;
     long num = strtol(name, &endp, 10);
@@ -855,7 +870,7 @@ static int builtin_command(vm_t *vm, int argc, value_t *argv)
         if (pid < 0) {
             fprintf(stderr, "opsh: fork: %s\n", strerror(errno));
             for (i = 1; i < argc - 1; i++) {
-                free(exec_argv[i]);
+                rcstr_release(exec_argv[i]);
             }
             free(exec_argv);
             free(cmd_name);
@@ -887,7 +902,7 @@ static int builtin_command(vm_t *vm, int argc, value_t *argv)
         }
 
         for (i = 1; i < argc - 1; i++) {
-            free(exec_argv[i]);
+            rcstr_release(exec_argv[i]);
         }
         free(exec_argv);
         free(cmd_name);
@@ -895,15 +910,189 @@ static int builtin_command(vm_t *vm, int argc, value_t *argv)
     }
 }
 
+static int builtin_exec(vm_t *vm, int argc, value_t *argv)
+{
+    if (argc < 2) {
+        /* exec without args: redirections are made permanent by the
+         * compiler suppressing OP_REDIR_RESTORE. Nothing to do here. */
+        return 0;
+    }
+
+    char **exec_argv = xcalloc((size_t)argc, sizeof(char *));
+    int i;
+    for (i = 1; i < argc; i++) {
+        exec_argv[i - 1] = value_to_string(&argv[i]);
+    }
+    exec_argv[argc - 1] = NULL;
+
+    signal_reset();
+    execvp(exec_argv[0], exec_argv);
+
+    int err = errno;
+    fprintf(stderr, "opsh: exec: %s: %s\n", exec_argv[0], strerror(err));
+    /* Restore signal handlers since exec failed */
+    signal_init();
+
+    for (i = 0; i < argc - 1; i++) {
+        rcstr_release(exec_argv[i]);
+    }
+    free(exec_argv);
+
+    (void)vm;
+    return (err == ENOENT) ? 127 : 126;
+}
+
+static int builtin_wait(vm_t *vm, int argc, value_t *argv)
+{
+    (void)vm;
+    if (argc < 2) {
+        /* Wait for all children */
+        int last_status = 0;
+        int wstatus;
+        pid_t wp;
+        while ((wp = waitpid(-1, &wstatus, 0)) > 0 || (wp < 0 && errno == EINTR)) {
+            if (wp < 0) {
+                continue;
+            }
+            if (WIFEXITED(wstatus)) {
+                last_status = WEXITSTATUS(wstatus);
+            } else if (WIFSIGNALED(wstatus)) {
+                last_status = 128 + WTERMSIG(wstatus);
+            }
+        }
+        return last_status;
+    }
+
+    /* Wait for specific PID */
+    char *pid_str = value_to_string(&argv[1]);
+    char *endp;
+    long pval = strtol(pid_str, &endp, 10);
+    if (*endp != '\0') {
+        fprintf(stderr, "opsh: wait: %s: invalid pid\n", pid_str);
+        free(pid_str);
+        return 2;
+    }
+    pid_t pid = (pid_t)pval;
+    free(pid_str);
+
+    int wstatus;
+    pid_t wp;
+    while ((wp = waitpid(pid, &wstatus, 0)) < 0 && errno == EINTR) {
+        /* retry */
+    }
+    if (wp < 0) {
+        return 127;
+    }
+    if (WIFEXITED(wstatus)) {
+        return WEXITSTATUS(wstatus);
+    }
+    if (WIFSIGNALED(wstatus)) {
+        return 128 + WTERMSIG(wstatus);
+    }
+    return 1;
+}
+
+static int builtin_kill(vm_t *vm, int argc, value_t *argv)
+{
+    (void)vm;
+    if (argc < 2) {
+        fprintf(stderr, "opsh: kill: usage: kill [-signal] pid...\n");
+        return 2;
+    }
+
+    char *arg1 = value_to_string(&argv[1]);
+
+    /* kill -l: list signals */
+    if (strcmp(arg1, "-l") == 0) {
+        free(arg1);
+        write_fd1("HUP INT QUIT TERM KILL USR1 USR2\n", 33);
+        return 0;
+    }
+
+    /* Parse signal: default is SIGTERM */
+    int signo = SIGTERM;
+    int pid_start = 1;
+
+    if (arg1[0] == '-' && arg1[1] != '\0') {
+        /* -signal or -SIGNAME */
+        int sn = signame_to_num(arg1 + 1);
+        if (sn < 0) {
+            fprintf(stderr, "opsh: kill: %s: invalid signal\n", arg1 + 1);
+            free(arg1);
+            return 2;
+        }
+        signo = sn;
+        pid_start = 2;
+    }
+    free(arg1);
+
+    if (pid_start >= argc) {
+        fprintf(stderr, "opsh: kill: no pid specified\n");
+        return 2;
+    }
+
+    int result = 0;
+    int i;
+    for (i = pid_start; i < argc; i++) {
+        char *ps = value_to_string(&argv[i]);
+        char *endp;
+        long pval = strtol(ps, &endp, 10);
+        if (*endp != '\0') {
+            fprintf(stderr, "opsh: kill: %s: invalid pid\n", ps);
+            free(ps);
+            result = 1;
+            continue;
+        }
+        pid_t pid = (pid_t)pval;
+        free(ps);
+        if (kill(pid, signo) != 0) {
+            fprintf(stderr, "opsh: kill: %d: %s\n", (int)pid, strerror(errno));
+            result = 1;
+        }
+    }
+    return result;
+}
+
+static int builtin_umask(vm_t *vm, int argc, value_t *argv)
+{
+    (void)vm;
+    if (argc < 2) {
+        mode_t m = umask(0);
+        umask(m);
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%04o\n", (unsigned)m);
+        write_fd1(buf, strlen(buf));
+        return 0;
+    }
+
+    char *arg = value_to_string(&argv[1]);
+    char *endp;
+    unsigned long val = strtoul(arg, &endp, 8);
+    if (*endp != '\0' || val > 0777) {
+        fprintf(stderr, "opsh: umask: %s: invalid mask\n", arg);
+        free(arg);
+        return 1;
+    }
+    umask((mode_t)val);
+    free(arg);
+    return 0;
+}
+
 const builtin_entry_t builtin_table[] = {
-    {"echo", builtin_echo},         {"exit", builtin_exit},       {"true", builtin_true},
-    {"false", builtin_false},       {":", builtin_true},          {"cd", builtin_cd},
-    {"pwd", builtin_pwd},           {"export", builtin_export},   {"unset", builtin_unset},
-    {"readonly", builtin_readonly}, {"local", builtin_local},     {"shift", builtin_shift},
-    {"test", builtin_test},         {"[", builtin_test},          {"printf", builtin_printf},
-    {"read", builtin_read},         {"return", builtin_return},   {"type", builtin_type},
-    {"trap", builtin_trap},         {"eval", builtin_eval},       {".", builtin_dot},
-    {"source", builtin_dot},        {"command", builtin_command}, {NULL, NULL},
+    {"echo", builtin_echo},       {"exit", builtin_exit},
+    {"true", builtin_true},       {"false", builtin_false},
+    {":", builtin_true},          {"cd", builtin_cd},
+    {"pwd", builtin_pwd},         {"export", builtin_export},
+    {"unset", builtin_unset},     {"readonly", builtin_readonly},
+    {"local", builtin_local},     {"shift", builtin_shift},
+    {"test", builtin_test},       {"[", builtin_test},
+    {"printf", builtin_printf},   {"read", builtin_read},
+    {"return", builtin_return},   {"type", builtin_type},
+    {"trap", builtin_trap},       {"eval", builtin_eval},
+    {".", builtin_dot},           {"source", builtin_dot},
+    {"command", builtin_command}, {"exec", builtin_exec},
+    {"wait", builtin_wait},       {"kill", builtin_kill},
+    {"umask", builtin_umask},     {NULL, NULL},
 };
 
 int builtin_lookup(const char *name)
