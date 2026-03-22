@@ -2,6 +2,7 @@
 
 #include "builtins/builtins.h"
 #include "foundation/util.h"
+#include "parser/parser.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -232,15 +233,63 @@ static void compile_word(compiler_t *cc, word_part_t *w, unsigned int lineno)
             break;
         }
 
-        case WP_CMDSUB:
-            compiler_error(cc, lineno, "command substitution not yet supported by compiler");
-            {
+        case WP_CMDSUB: {
+            /* Compile the command substitution body as a sub-segment.
+             * Layout: JMP over body, body..., HALT, then CMD_SUBST offset */
+            char *cmdsub_source = NULL;
+            if (unit->part.cmdsub.is_preparsed) {
+                compiler_error(cc, lineno, "preparsed command substitution not yet supported");
                 uint16_t empty = image_add_const(cc->image, "");
                 image_emit_u8(cc->image, OP_PUSH_CONST);
                 image_emit_u16(cc->image, empty);
+                part_count++;
+                break;
+            }
+            cmdsub_source = unit->part.cmdsub.u.unparsed;
+
+            /* Parse the command substitution content */
+            parser_t sub_parser;
+            parser_init(&sub_parser, cmdsub_source, cc->filename);
+            sh_list_t *sub_ast = parser_parse(&sub_parser);
+            if (parser_error_count(&sub_parser) > 0) {
+                compiler_error(cc, lineno, "error in command substitution");
+                sh_list_free(sub_ast);
+                parser_destroy(&sub_parser);
+                uint16_t empty = image_add_const(cc->image, "");
+                image_emit_u8(cc->image, OP_PUSH_CONST);
+                image_emit_u16(cc->image, empty);
+                part_count++;
+                break;
+            }
+
+            /* JMP over the sub-segment */
+            size_t skip_jump = emit_jump(cc, OP_JMP);
+
+            /* Record the sub-segment start offset */
+            size_t sub_offset = cc->image->code_size;
+
+            /* Compile the sub-program */
+            compile_program(cc, sub_ast);
+            image_emit_u8(cc->image, OP_HALT);
+
+            sh_list_free(sub_ast);
+            parser_destroy(&sub_parser);
+
+            /* Patch the skip jump */
+            patch_jump(cc, skip_jump);
+
+            /* Emit CMD_SUBST with the sub-segment offset */
+            image_emit_u8(cc->image, OP_CMD_SUBST);
+            {
+                uint32_t uoff = (uint32_t)sub_offset;
+                image_emit_u8(cc->image, (uint8_t)(uoff & 0xFF));
+                image_emit_u8(cc->image, (uint8_t)((uoff >> 8) & 0xFF));
+                image_emit_u8(cc->image, (uint8_t)((uoff >> 16) & 0xFF));
+                image_emit_u8(cc->image, (uint8_t)((uoff >> 24) & 0xFF));
             }
             part_count++;
             break;
+        }
         }
     }
 
@@ -332,6 +381,53 @@ static void compile_simple(compiler_t *cc, command_t *cmd)
     }
 
     image_emit_u8(cc->image, OP_REDIR_SAVE);
+
+    /* Emit redirections */
+    {
+        io_redir_t *rd;
+        for (rd = cmd->redirs; rd != NULL; rd = rd->next) {
+            switch (rd->type) {
+            case REDIR_IN:
+            case REDIR_OUT:
+            case REDIR_APPEND:
+            case REDIR_CLOBBER:
+            case REDIR_RDWR:
+                /* Push filename onto stack, then REDIR_OPEN */
+                compile_word(cc, rd->target, cmd->lineno);
+                image_emit_u8(cc->image, OP_REDIR_OPEN);
+                image_emit_u8(cc->image, (uint8_t)rd->fd);
+                image_emit_u8(cc->image, (uint8_t)rd->type);
+                break;
+            case REDIR_DUPIN:
+            case REDIR_DUPOUT:
+                /* Push target FD string, then REDIR_DUP */
+                compile_word(cc, rd->target, cmd->lineno);
+                image_emit_u8(cc->image, OP_REDIR_DUP);
+                image_emit_u8(cc->image, (uint8_t)rd->fd);
+                image_emit_u8(cc->image, 0); /* direction flag */
+                break;
+            case REDIR_CLOSE:
+                image_emit_u8(cc->image, OP_REDIR_CLOSE);
+                image_emit_u8(cc->image, (uint8_t)rd->fd);
+                break;
+            case REDIR_HEREDOC:
+            case REDIR_HEREDOC_STRIP:
+            case REDIR_HERESTR:
+                /* Push here-doc content, then REDIR_HERE */
+                if (rd->target != NULL) {
+                    compile_word(cc, rd->target, cmd->lineno);
+                } else {
+                    uint16_t empty = image_add_const(cc->image, "");
+                    image_emit_u8(cc->image, OP_PUSH_CONST);
+                    image_emit_u16(cc->image, empty);
+                }
+                image_emit_u8(cc->image, OP_REDIR_HERE);
+                image_emit_u8(cc->image, (uint8_t)rd->fd);
+                image_emit_u8(cc->image, rd->heredoc_expand ? 1 : 0);
+                break;
+            }
+        }
+    }
 
     for (i = 0; i < words->length; i++) {
         word_part_t *w = plist_get(words, i);
@@ -803,18 +899,61 @@ static void compile_command(compiler_t *cc, command_t *cmd)
 
 static void compile_and_or(compiler_t *cc, and_or_t *pl)
 {
+    command_t *cmd;
+    int cmd_count;
+
     if (pl->commands == NULL) {
         return;
     }
-    if (pl->commands->next != NULL) {
-        compiler_error(cc, pl->commands->lineno,
-                       "multi-command pipelines not yet supported by compiler");
+
+    /* Single-command pipeline: no fork needed */
+    if (pl->commands->next == NULL) {
+        compile_command(cc, pl->commands);
+        if (pl->negated) {
+            image_emit_u8(cc->image, OP_NEGATE_STATUS);
+        }
         return;
     }
-    compile_command(cc, pl->commands);
 
-    if (pl->negated) {
-        image_emit_u8(cc->image, OP_NEGATE_STATUS);
+    /* Multi-command pipeline: compile each member as a sub-segment */
+    cmd_count = 0;
+    for (cmd = pl->commands; cmd != NULL; cmd = cmd->next) {
+        cmd_count++;
+    }
+
+    /* First pass: compile all sub-segments, collecting their offsets.
+     * This ensures the PIPELINE/PIPELINE_CMD/PIPELINE_END sequence
+     * is contiguous in the bytecode stream. */
+    {
+        size_t *offsets = xmalloc((size_t)cmd_count * sizeof(size_t));
+        int ci = 0;
+
+        for (cmd = pl->commands; cmd != NULL; cmd = cmd->next) {
+            size_t skip_jump = emit_jump(cc, OP_JMP);
+            offsets[ci] = cc->image->code_size;
+            compile_command(cc, cmd);
+            image_emit_u8(cc->image, OP_HALT);
+            patch_jump(cc, skip_jump);
+            ci++;
+        }
+
+        /* Second pass: emit the contiguous PIPELINE instruction block */
+        image_emit_u8(cc->image, OP_PIPELINE);
+        image_emit_u16(cc->image, (uint16_t)cmd_count);
+
+        for (ci = 0; ci < cmd_count; ci++) {
+            uint32_t uoff = (uint32_t)offsets[ci];
+            image_emit_u8(cc->image, OP_PIPELINE_CMD);
+            image_emit_u8(cc->image, (uint8_t)(uoff & 0xFF));
+            image_emit_u8(cc->image, (uint8_t)((uoff >> 8) & 0xFF));
+            image_emit_u8(cc->image, (uint8_t)((uoff >> 16) & 0xFF));
+            image_emit_u8(cc->image, (uint8_t)((uoff >> 24) & 0xFF));
+        }
+
+        image_emit_u8(cc->image, OP_PIPELINE_END);
+        image_emit_u8(cc->image, pl->negated ? 1 : 0);
+
+        free(offsets);
     }
 }
 

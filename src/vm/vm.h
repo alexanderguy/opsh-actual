@@ -39,6 +39,24 @@ typedef struct {
 
 #define VM_CALL_STACK_MAX 256
 #define VM_LOOP_STACK_MAX 64
+#define VM_REDIR_STACK_MAX 64
+#define VM_SAVED_FD_BASE 100 /* save FDs starting from this number */
+
+/*
+ * Saved FD entry for redirection restore.
+ */
+typedef struct {
+    int original_fd; /* the FD that was redirected */
+    int saved_fd;    /* where the original was dup'd to (-1 if closed) */
+} saved_fd_t;
+
+/*
+ * Redirection save frame.
+ */
+typedef struct {
+    saved_fd_t entries[16]; /* saved FD entries */
+    int count;
+} redir_frame_t;
 
 /*
  * Call frame for function calls.
@@ -73,6 +91,9 @@ typedef struct vm {
 
     loop_frame_t loop_stack[VM_LOOP_STACK_MAX];
     int loop_depth;
+
+    redir_frame_t redir_stack[VM_REDIR_STACK_MAX];
+    int redir_depth;
 
     vm_func_t *func_table; /* function registry (owned) */
     int func_count;

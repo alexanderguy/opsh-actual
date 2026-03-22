@@ -5,8 +5,11 @@
 #include "vm/disasm.h"
 #include "vm/vm.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 /*
  * Helper: compile source, run it, capture stdout, return the output.
@@ -32,23 +35,42 @@ static char *compile_and_run(const char *source, int *status_out)
         return NULL;
     }
 
+    /* Capture stdout by redirecting fd 1 to a pipe */
+    int pipefd[2];
+    pipe(pipefd);
+    fflush(stdout);
+    int saved_stdout = dup(STDOUT_FILENO);
+    dup2(pipefd[1], STDOUT_FILENO);
+    close(pipefd[1]);
+
     vm_t vm;
     vm_init(&vm, img);
-    vm.captured_stdout = xcalloc(1, 1024);
-    vm.captured_stdout_cap = 1024;
-    vm.captured_stdout_len = 0;
 
     int status = vm_run(&vm);
     if (status_out != NULL) {
         *status_out = status;
     }
 
-    char *output = vm.captured_stdout;
-    vm.captured_stdout = NULL;
+    /* Restore stdout and read captured output */
+    fflush(stdout);
+    dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdout);
+
+    strbuf_t captured;
+    strbuf_init(&captured);
+    {
+        char buf[4096];
+        ssize_t n;
+        while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
+            strbuf_append_bytes(&captured, buf, (size_t)n);
+        }
+    }
+    close(pipefd[0]);
+
     vm_destroy(&vm);
     image_free(img);
 
-    return output;
+    return strbuf_detach(&captured);
 }
 
 static void test_echo_hello_world(void)
@@ -473,9 +495,128 @@ static void test_nested_control(void)
     free(out);
 }
 
+static void test_command_substitution(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("X=$(echo hello); echo $X", &status);
+    tap_is_str(out, "hello\n", "$(echo hello): captures output");
+    free(out);
+
+    out = compile_and_run("echo $(echo world)", &status);
+    tap_is_str(out, "world\n", "$(echo world): inline cmdsub");
+    free(out);
+
+    out = compile_and_run("echo a$(echo b)c", &status);
+    tap_is_str(out, "abc\n", "a$(echo b)c: cmdsub in word");
+    free(out);
+}
+
+static void test_pipeline(void)
+{
+    int status;
+    char *out;
+
+    /* Single-command pipeline (no fork) */
+    out = compile_and_run("echo hello", &status);
+    tap_is_str(out, "hello\n", "pipeline: single command");
+    free(out);
+
+    /* Multi-command pipeline -- output goes to stdout of last command.
+     * Since we capture stdout in the parent, and children write to real
+     * stdout, we need to test differently. Use command substitution to
+     * capture pipeline output. */
+    out = compile_and_run("X=$(echo hello | true); echo done", &status);
+    tap_is_str(out, "done\n", "pipeline: runs without crash");
+    free(out);
+}
+
+static void test_negated_pipeline(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("! true", &status);
+    tap_is_int(status, 1, "! true: negated to 1");
+    free(out);
+
+    out = compile_and_run("! false", &status);
+    tap_is_int(status, 0, "! false: negated to 0");
+    free(out);
+}
+
+static char *read_file(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        return NULL;
+    }
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *buf = malloc((size_t)len + 1);
+    if (len > 0) {
+        fread(buf, 1, (size_t)len, f);
+    }
+    buf[len] = '\0';
+    fclose(f);
+    return buf;
+}
+
+static void test_output_redirection(void)
+{
+    int status;
+
+    /* echo hello > file */
+    unlink("tmp/test_redir_out.txt");
+    mkdir("tmp", 0755);
+    char *out = compile_and_run("echo hello >tmp/test_redir_out.txt", &status);
+    tap_is_int(status, 0, "> redirect: exit status 0");
+    /* Output should NOT go to captured_stdout */
+    tap_is_str(out, "", "> redirect: nothing on stdout");
+    free(out);
+
+    char *contents = read_file("tmp/test_redir_out.txt");
+    tap_is_str(contents, "hello\n", "> redirect: file contains output");
+    free(contents);
+    unlink("tmp/test_redir_out.txt");
+}
+
+static void test_append_redirection(void)
+{
+    int status;
+
+    mkdir("tmp", 0755);
+    char *out;
+    out = compile_and_run("echo first >tmp/test_redir_app.txt", &status);
+    free(out);
+    out = compile_and_run("echo second >>tmp/test_redir_app.txt", &status);
+    tap_is_int(status, 0, ">> redirect: exit status 0");
+    free(out);
+
+    char *contents = read_file("tmp/test_redir_app.txt");
+    tap_is_str(contents, "first\nsecond\n", ">> redirect: appended");
+    free(contents);
+    unlink("tmp/test_redir_app.txt");
+}
+
+static void test_fd_dup(void)
+{
+    int status;
+
+    /* Redirect stderr to stdout via 2>&1, capture both */
+    /* Since our echo writes to fd 1, and 2>&1 copies fd 1 to fd 2,
+     * this test just verifies the dup doesn't crash */
+    mkdir("tmp", 0755);
+    char *out = compile_and_run("echo hello 2>&1", &status);
+    tap_is_int(status, 0, "2>&1: exit status 0");
+    free(out);
+}
+
 int main(void)
 {
-    tap_plan(64);
+    tap_plan(77);
 
     test_echo_hello_world();
     test_echo_single_word();
@@ -513,6 +654,12 @@ int main(void)
     test_brace_group();
     test_function_def();
     test_nested_control();
+    test_command_substitution();
+    test_pipeline();
+    test_negated_pipeline();
+    test_output_redirection();
+    test_append_redirection();
+    test_fd_dup();
 
     return tap_done();
 }
