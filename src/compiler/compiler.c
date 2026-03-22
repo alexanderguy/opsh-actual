@@ -493,6 +493,29 @@ static void compile_simple(compiler_t *cc, command_t *cmd)
         }
     }
 
+    /* If there are both assignments and command words, save the current
+     * values so they can be restored after the command completes. */
+    bool temp_assigns = (assigns->length > 0 && words->length > 0);
+    if (temp_assigns) {
+        /* Push current values of each assigned variable for later restore */
+        for (i = 0; i < assigns->length; i++) {
+            word_part_t *w = plist_get(assigns, i);
+            if (w != NULL && w->type == WP_LITERAL) {
+                const char *eq = strchr(w->part.string, '=');
+                if (eq != NULL) {
+                    size_t nlen = (size_t)(eq - w->part.string);
+                    char *nm = xmalloc(nlen + 1);
+                    memcpy(nm, w->part.string, nlen);
+                    nm[nlen] = '\0';
+                    uint16_t nidx = image_add_const(cc->image, nm);
+                    free(nm);
+                    image_emit_u8(cc->image, OP_GET_VAR);
+                    image_emit_u16(cc->image, nidx);
+                }
+            }
+        }
+    }
+
     /* Compile assignments */
     for (i = 0; i < assigns->length; i++) {
         word_part_t *w = plist_get(assigns, i);
@@ -656,6 +679,27 @@ static void compile_simple(compiler_t *cc, command_t *cmd)
     } else {
         image_emit_u8(cc->image, OP_EXEC_SIMPLE);
         image_emit_u8(cc->image, 0);
+    }
+
+    if (temp_assigns) {
+        /* Restore saved values in reverse order */
+        size_t ri;
+        for (ri = assigns->length; ri > 0; ri--) {
+            word_part_t *w = plist_get(assigns, ri - 1);
+            if (w != NULL && w->type == WP_LITERAL) {
+                const char *eq = strchr(w->part.string, '=');
+                if (eq != NULL) {
+                    size_t nlen = (size_t)(eq - w->part.string);
+                    char *nm = xmalloc(nlen + 1);
+                    memcpy(nm, w->part.string, nlen);
+                    nm[nlen] = '\0';
+                    uint16_t nidx = image_add_const(cc->image, nm);
+                    free(nm);
+                    image_emit_u8(cc->image, OP_SET_VAR);
+                    image_emit_u16(cc->image, nidx);
+                }
+            }
+        }
     }
 
     image_emit_u8(cc->image, OP_REDIR_RESTORE);
