@@ -15,6 +15,7 @@
 #include <fnmatch.h>
 #include <glob.h>
 #include <inttypes.h>
+#include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1119,6 +1120,31 @@ int vm_run(vm_t *vm)
             char *s = value_to_string(&v);
             value_destroy(&v);
             const char *home = getenv("HOME");
+
+            /* ~user expansion */
+            if (s[0] == '~' && s[1] != '/' && s[1] != '\0' && s[1] != ':') {
+                const char *end = s + 1;
+                while (*end && *end != '/' && *end != ':') {
+                    end++;
+                }
+                size_t ulen = (size_t)(end - s - 1);
+                char *username = xmalloc(ulen + 1);
+                memcpy(username, s + 1, ulen);
+                username[ulen] = '\0';
+                struct passwd *pw = getpwnam(username);
+                free(username);
+                if (pw != NULL) {
+                    strbuf_t result;
+                    strbuf_init(&result);
+                    strbuf_append_str(&result, pw->pw_dir);
+                    strbuf_append_str(&result, end);
+                    free(s);
+                    vm_push(vm, value_string(strbuf_detach(&result)));
+                } else {
+                    vm_push(vm, value_string(s));
+                }
+                break;
+            }
 
             if (s[0] == '~' && (s[1] == '/' || s[1] == '\0' || s[1] == ':') && home != NULL) {
                 strbuf_t result;
