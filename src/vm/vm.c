@@ -1750,68 +1750,15 @@ int vm_run(vm_t *vm)
             case TEST_O:
             case TEST_GG:
             case TEST_NT: {
-                struct stat st;
-                int sr = (op == TEST_L) ? lstat(s, &st) : stat(s, &st);
-                if (sr == 0) {
-                    switch ((test_op_t)op) {
-                    case TEST_F:
-                        result = S_ISREG(st.st_mode) ? 0 : 1;
-                        break;
-                    case TEST_D:
-                        result = S_ISDIR(st.st_mode) ? 0 : 1;
-                        break;
-                    case TEST_E:
-                        result = 0;
-                        break;
-                    case TEST_S:
-                        result = (st.st_size > 0) ? 0 : 1;
-                        break;
-                    case TEST_R:
-                        result = (access(s, R_OK) == 0) ? 0 : 1;
-                        break;
-                    case TEST_W:
-                        result = (access(s, W_OK) == 0) ? 0 : 1;
-                        break;
-                    case TEST_X:
-                        result = (access(s, X_OK) == 0) ? 0 : 1;
-                        break;
-                    case TEST_L:
-                        result = S_ISLNK(st.st_mode) ? 0 : 1;
-                        break;
-                    case TEST_P:
-                        result = S_ISFIFO(st.st_mode) ? 0 : 1;
-                        break;
-                    case TEST_B:
-                        result = S_ISBLK(st.st_mode) ? 0 : 1;
-                        break;
-                    case TEST_C:
-                        result = S_ISCHR(st.st_mode) ? 0 : 1;
-                        break;
-                    case TEST_SS:
-                        result = S_ISSOCK(st.st_mode) ? 0 : 1;
-                        break;
-                    case TEST_G:
-                        result = (st.st_mode & S_ISGID) ? 0 : 1;
-                        break;
-                    case TEST_U:
-                        result = (st.st_mode & S_ISUID) ? 0 : 1;
-                        break;
-                    case TEST_K:
-                        result = (st.st_mode & S_ISVTX) ? 0 : 1;
-                        break;
-                    case TEST_O:
-                        result = (st.st_uid == geteuid()) ? 0 : 1;
-                        break;
-                    case TEST_GG:
-                        result = (st.st_gid == getegid()) ? 0 : 1;
-                        break;
-                    case TEST_NT:
-                        result = 0; /* -N: always true if file exists */
-                        break;
-                    default:
-                        break;
-                    }
-                }
+                /* Map enum to operator string for shared test_file helper */
+                static const char *const file_ops[] = {
+                    [TEST_F] = "-f",  [TEST_D] = "-d",  [TEST_E] = "-e", [TEST_S] = "-s",
+                    [TEST_R] = "-r",  [TEST_W] = "-w",  [TEST_X] = "-x", [TEST_L] = "-L",
+                    [TEST_P] = "-p",  [TEST_B] = "-b",  [TEST_C] = "-c", [TEST_SS] = "-S",
+                    [TEST_G] = "-g",  [TEST_U] = "-u",  [TEST_K] = "-k", [TEST_O] = "-O",
+                    [TEST_GG] = "-G", [TEST_NT] = "-N",
+                };
+                result = test_file(file_ops[op], s);
                 break;
             }
             case TEST_T: {
