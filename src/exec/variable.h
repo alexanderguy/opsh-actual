@@ -57,6 +57,10 @@ void environ_set_flags(environ_t *env, const char *name, value_t value, unsigned
 /* Mark a variable for export. Searches the scope chain. */
 void environ_export(environ_t *env, const char *name);
 
+/* Set a variable in the current scope only, ignoring parent readonly.
+ * Used by `local` to shadow readonly variables. */
+void environ_set_local(environ_t *env, const char *name, value_t value);
+
 /* Remove a variable from the innermost scope that contains it. */
 void environ_unset(environ_t *env, const char *name);
 

@@ -716,9 +716,27 @@ int vm_run(vm_t *vm)
             if (builtin_idx < (uint16_t)builtin_count() && builtin_table[builtin_idx].fn != NULL) {
                 int status = builtin_table[builtin_idx].fn(vm, argc, argv);
                 vm->laststatus = status;
-                /* Special case: exit halts the VM */
+                /* Special cases */
                 if (strcmp(builtin_table[builtin_idx].name, "exit") == 0) {
                     vm->halted = true;
+                }
+                /* return builtin triggers function return */
+                if (vm->return_requested) {
+                    vm->return_requested = false;
+                    if (vm->call_depth > 0) {
+                        call_frame_t *frame = &vm->call_stack[--vm->call_depth];
+                        while (vm->stack_top > frame->saved_stack_base) {
+                            value_t v = vm_pop(vm);
+                            value_destroy(&v);
+                        }
+                        vm->loop_depth = frame->saved_loop_depth;
+                        environ_t *func_env = vm->env;
+                        vm->env = func_env->parent;
+                        environ_destroy(func_env);
+                        vm->ip = frame->return_ip;
+                    } else {
+                        vm->halted = true;
+                    }
                 }
             } else {
                 fprintf(stderr, "opsh: unknown builtin index %u\n", builtin_idx);
@@ -770,6 +788,7 @@ int vm_run(vm_t *vm)
                         frame->return_ip = vm->ip;
                         frame->saved_env = vm->env;
                         frame->saved_stack_base = vm->stack_top;
+                        frame->saved_loop_depth = vm->loop_depth;
                         vm->env = environ_new(vm->env, false);
 
                         /* Bind positional parameters */
@@ -864,6 +883,7 @@ int vm_run(vm_t *vm)
             frame->return_ip = vm->ip;
             frame->saved_env = vm->env;
             frame->saved_stack_base = vm->stack_top;
+            frame->saved_loop_depth = vm->loop_depth;
 
             /* Push a new scope for the function */
             vm->env = environ_new(vm->env, false);
@@ -904,6 +924,9 @@ int vm_run(vm_t *vm)
                 value_t v = vm_pop(vm);
                 value_destroy(&v);
             }
+
+            /* Restore loop depth */
+            vm->loop_depth = frame->saved_loop_depth;
 
             /* Pop function scope */
             environ_t *func_env = vm->env;

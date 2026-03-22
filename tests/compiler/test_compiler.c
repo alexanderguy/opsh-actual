@@ -614,9 +614,120 @@ static void test_fd_dup(void)
     free(out);
 }
 
+static void test_builtin_cd_pwd(void)
+{
+    int status;
+    char *out;
+
+    /* cd to a known directory and verify pwd output ends with newline */
+    out = compile_and_run("cd /; pwd", &status);
+    tap_is_str(out, "/\n", "cd/pwd: changes and shows directory");
+    free(out);
+}
+
+static void test_builtin_export_unset(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("export X=exported; echo $X", &status);
+    tap_is_str(out, "exported\n", "export: sets and echoes value");
+    free(out);
+
+    out = compile_and_run("Y=val; unset Y; echo ${Y:-gone}", &status);
+    tap_is_str(out, "gone\n", "unset: removes variable");
+    free(out);
+}
+
+static void test_builtin_readonly(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("readonly R=locked; echo $R", &status);
+    tap_is_str(out, "locked\n", "readonly: sets value");
+    free(out);
+}
+
+static void test_builtin_local(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("X=global\nf() { local X=local; echo $X; }\nf\necho $X", &status);
+    tap_is_str(out, "local\nglobal\n", "local: scoped to function");
+    free(out);
+}
+
+static void test_builtin_return(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("f() { echo before; return 42; echo after; }\nf\necho $?", &status);
+    tap_is_str(out, "before\n42\n", "return: exits function with status");
+    free(out);
+}
+
+static void test_builtin_test(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("test -d /tmp && echo yes", &status);
+    tap_is_str(out, "yes\n", "test -d: directory exists");
+    free(out);
+
+    out = compile_and_run("test hello = hello && echo eq", &status);
+    tap_is_str(out, "eq\n", "test =: strings equal");
+    free(out);
+
+    out = compile_and_run("test 5 -gt 3 && echo gt", &status);
+    tap_is_str(out, "gt\n", "test -gt: integer comparison");
+    free(out);
+
+    out = compile_and_run("X=; [ -z $X ] && echo empty", &status);
+    tap_is_str(out, "empty\n", "[: -z empty string");
+    free(out);
+}
+
+static void test_builtin_printf(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("printf 'hello %s\\n' world", &status);
+    tap_is_str(out, "hello world\n", "printf: string format");
+    free(out);
+
+    out = compile_and_run("printf '%d + %d = %d\\n' 2 3 5", &status);
+    tap_is_str(out, "2 + 3 = 5\n", "printf: integer format");
+    free(out);
+}
+
+static void test_builtin_shift(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("f() { shift; echo $1; }\nf a b c", &status);
+    tap_is_str(out, "b\n", "shift: shifts positional params");
+    free(out);
+}
+
+static void test_builtin_type(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("type echo", &status);
+    tap_is_str(out, "echo is a shell builtin\n", "type: identifies builtin");
+    free(out);
+}
+
 int main(void)
 {
-    tap_plan(77);
+    tap_plan(91);
 
     test_echo_hello_world();
     test_echo_single_word();
@@ -660,6 +771,15 @@ int main(void)
     test_output_redirection();
     test_append_redirection();
     test_fd_dup();
+    test_builtin_cd_pwd();
+    test_builtin_export_unset();
+    test_builtin_readonly();
+    test_builtin_local();
+    test_builtin_return();
+    test_builtin_test();
+    test_builtin_printf();
+    test_builtin_shift();
+    test_builtin_type();
 
     return tap_done();
 }
