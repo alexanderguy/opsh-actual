@@ -135,6 +135,8 @@ static const char *opcode_name(uint8_t op)
         return "PATTERN_MATCH";
     case OP_IMPORT:
         return "IMPORT";
+    case OP_EXPAND_ARGS:
+        return "EXPAND_ARGS";
     case OP_CAP_CHECK:
         return "CAP_CHECK";
     case OP_ERREXIT_PUSH:

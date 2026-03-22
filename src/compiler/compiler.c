@@ -352,6 +352,13 @@ static bool is_literal_word(word_part_t *w)
     return w != NULL && w->type == WP_LITERAL && w->next == NULL;
 }
 
+static bool is_quoted_at(word_part_t *w)
+{
+    return w != NULL && w->type == WP_PARAM && w->quoted && w->next == NULL &&
+           w->part.param->type == PE_NONE && w->part.param->name[0] == '@' &&
+           w->part.param->name[1] == '\0';
+}
+
 static bool word_starts_with_tilde(word_part_t *w)
 {
     return w != NULL && w->type == WP_LITERAL && !w->quoted && w->part.string[0] == '~';
@@ -635,6 +642,13 @@ static void compile_simple(compiler_t *cc, command_t *cmd)
      * Everything else gets count=1. */
     for (i = 0; i < words->length; i++) {
         word_part_t *w = plist_get(words, i);
+
+        /* "$@" expands to separate words preserving boundaries */
+        if (is_quoted_at(w)) {
+            image_emit_u8(cc->image, OP_EXPAND_ARGS);
+            continue;
+        }
+
         compile_word(cc, w, cmd->lineno);
 
         if (word_starts_with_tilde(w)) {
@@ -759,15 +773,19 @@ static void compile_for(compiler_t *cc, command_t *cmd)
     uint16_t var_idx = image_add_const(cc->image, varname);
 
     if (words->length == 0) {
-        /* for x; do ... done -- iterate over $@ */
-        image_emit_u8(cc->image, OP_GET_SPECIAL);
-        image_emit_u8(cc->image, (uint8_t)SPECIAL_AT);
-        image_emit_u8(cc->image, OP_SPLIT_FIELDS);
+        /* for x; do ... done -- iterate over $@ preserving word boundaries */
+        image_emit_u8(cc->image, OP_EXPAND_ARGS);
         image_emit_u8(cc->image, OP_INIT_ITER);
     } else {
         /* Push all word values with splitting/globbing as groups */
         for (i = 0; i < words->length; i++) {
             word_part_t *w = plist_get(words, i);
+
+            if (is_quoted_at(w)) {
+                image_emit_u8(cc->image, OP_EXPAND_ARGS);
+                continue;
+            }
+
             compile_word(cc, w, cmd->lineno);
 
             if (word_needs_split(w)) {
