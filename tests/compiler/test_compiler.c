@@ -725,9 +725,83 @@ static void test_builtin_type(void)
     free(out);
 }
 
+static void test_field_splitting(void)
+{
+    int status;
+    char *out;
+
+    /* $var with spaces should split into multiple arguments */
+    out = compile_and_run("X='a b c'; echo $X", &status);
+    tap_is_str(out, "a b c\n", "split: $var with spaces splits into 3 args");
+    free(out);
+
+    /* Empty variable should produce no arguments (0 fields) */
+    out = compile_and_run("X=; echo $X end", &status);
+    tap_is_str(out, "end\n", "split: empty var produces no fields");
+    free(out);
+
+    /* Quoted variable should not split */
+    out = compile_and_run("X='a b c'; echo \"$X\"", &status);
+    tap_is_str(out, "a b c\n", "split: quoted $var does not split");
+    free(out);
+}
+
+static void test_field_splitting_ifs(void)
+{
+    int status;
+    char *out;
+
+    /* Custom IFS */
+    out = compile_and_run("IFS=:; X='a:b:c'; echo $X", &status);
+    tap_is_str(out, "a b c\n", "split: custom IFS splits on :");
+    free(out);
+}
+
+static void test_no_split_in_assignment(void)
+{
+    int status;
+    char *out;
+
+    /* Assignment value should not be split */
+    out = compile_and_run("X='a b c'; Y=$X; echo \"$Y\"", &status);
+    tap_is_str(out, "a b c\n", "split: assignment value not split");
+    free(out);
+}
+
+static void test_glob(void)
+{
+    int status;
+    char *out;
+
+    /* Glob that matches nothing returns the pattern literally */
+    out = compile_and_run("echo /nonexistent_dir_xyz/*.qqq", &status);
+    tap_is_str(out, "/nonexistent_dir_xyz/*.qqq\n", "glob: no match returns pattern");
+    free(out);
+
+    /* Glob that matches real files */
+    mkdir("tmp", 0755);
+    {
+        FILE *f;
+        f = fopen("tmp/glob_a.txt", "w");
+        if (f) {
+            fclose(f);
+        }
+        f = fopen("tmp/glob_b.txt", "w");
+        if (f) {
+            fclose(f);
+        }
+    }
+    out = compile_and_run("echo tmp/glob_*.txt", &status);
+    tap_ok(out != NULL && strstr(out, "glob_a.txt") != NULL, "glob: matches files (a)");
+    tap_ok(out != NULL && strstr(out, "glob_b.txt") != NULL, "glob: matches files (b)");
+    free(out);
+    unlink("tmp/glob_a.txt");
+    unlink("tmp/glob_b.txt");
+}
+
 int main(void)
 {
-    tap_plan(91);
+    tap_plan(99);
 
     test_echo_hello_world();
     test_echo_single_word();
@@ -780,6 +854,10 @@ int main(void)
     test_builtin_printf();
     test_builtin_shift();
     test_builtin_type();
+    test_field_splitting();
+    test_field_splitting_ifs();
+    test_no_split_in_assignment();
+    test_glob();
 
     return tap_done();
 }

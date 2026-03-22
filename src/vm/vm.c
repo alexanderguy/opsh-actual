@@ -7,6 +7,7 @@
 #include "parser/ast.h"
 
 #include <fcntl.h>
+#include <glob.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -513,6 +514,179 @@ int vm_run(vm_t *vm)
             char buf[32];
             snprintf(buf, sizeof(buf), "%lld", (long long)result);
             vm_push(vm, value_string(rcstr_new(buf)));
+            break;
+        }
+
+        case OP_SPLIT_FIELDS: {
+            value_t val = vm_pop(vm);
+            char *str = value_to_string(&val);
+            value_destroy(&val);
+
+            /* Get IFS (default: space, tab, newline) */
+            const char *ifs = " \t\n";
+            variable_t *ifs_var = environ_get(vm->env, "IFS");
+            if (ifs_var != NULL && ifs_var->value.type == VT_STRING) {
+                ifs = ifs_var->value.data.string;
+            }
+
+            /* If IFS is empty, no splitting -- push as single field */
+            if (ifs[0] == '\0') {
+                vm_push(vm, value_string(str));
+                vm_push(vm, value_integer(1));
+                break;
+            }
+
+            /* Split the string by IFS characters */
+            {
+                int field_count = 0;
+                const char *p = str;
+
+                /* Skip leading IFS whitespace */
+                while (*p && strchr(ifs, *p) != NULL && (*p == ' ' || *p == '\t' || *p == '\n')) {
+                    p++;
+                }
+
+                while (*p) {
+                    const char *start = p;
+                    /* Find next IFS character */
+                    while (*p && strchr(ifs, *p) == NULL) {
+                        p++;
+                    }
+
+                    size_t len = (size_t)(p - start);
+                    char tmp[len + 1];
+                    memcpy(tmp, start, len);
+                    tmp[len] = '\0';
+                    vm_push(vm, value_string(rcstr_new(tmp)));
+                    field_count++;
+
+                    /* Skip IFS delimiters */
+                    if (*p) {
+                        bool saw_nonws_delim = false;
+                        /* Skip one non-whitespace IFS delimiter */
+                        if (strchr(ifs, *p) != NULL && *p != ' ' && *p != '\t' && *p != '\n') {
+                            saw_nonws_delim = true;
+                            p++;
+                        }
+                        /* Skip IFS whitespace */
+                        while (*p && strchr(ifs, *p) != NULL &&
+                               (*p == ' ' || *p == '\t' || *p == '\n')) {
+                            p++;
+                        }
+                        /* Trailing non-whitespace delimiter produces empty field */
+                        if (saw_nonws_delim && *p == '\0') {
+                            vm_push(vm, value_string(rcstr_new("")));
+                            field_count++;
+                        }
+                    }
+                }
+
+                /* Empty string produces zero fields */
+                if (field_count == 0 && str[0] == '\0') {
+                    /* Push nothing, count = 0 */
+                }
+
+                rcstr_release(str);
+                vm_push(vm, value_integer(field_count));
+            }
+            break;
+        }
+
+        case OP_GLOB: {
+            /* Pop pattern, expand glob, push matches... count.
+             * If no matches, push the pattern itself with count=1. */
+            value_t pattern_val = vm_pop(vm);
+            char *pattern = value_to_string(&pattern_val);
+            value_destroy(&pattern_val);
+
+            /* Check if pattern contains glob characters */
+            bool has_glob = false;
+            {
+                const char *p = pattern;
+                while (*p) {
+                    if (*p == '*' || *p == '?' || *p == '[') {
+                        has_glob = true;
+                        break;
+                    }
+                    p++;
+                }
+            }
+
+            if (!has_glob) {
+                /* No glob chars -- push as-is, count=1 */
+                vm_push(vm, value_string(pattern));
+                vm_push(vm, value_integer(1));
+                break;
+            }
+
+            /* Simple glob: use the glob(3) function */
+            {
+                glob_t gl;
+                int ret = glob(pattern, GLOB_NOSORT, NULL, &gl);
+                if (ret == 0 && gl.gl_pathc > 0) {
+                    size_t gi;
+                    for (gi = 0; gi < gl.gl_pathc; gi++) {
+                        vm_push(vm, value_string(rcstr_new(gl.gl_pathv[gi])));
+                    }
+                    vm_push(vm, value_integer((int64_t)gl.gl_pathc));
+                    globfree(&gl);
+                } else {
+                    /* No matches -- return pattern literally */
+                    if (ret == 0) {
+                        globfree(&gl);
+                    }
+                    vm_push(vm, value_string(pattern));
+                    pattern = NULL; /* ownership transferred */
+                    vm_push(vm, value_integer(1));
+                }
+            }
+
+            rcstr_release(pattern);
+            break;
+        }
+
+        case OP_COLLECT_WORDS: {
+            /* Pop group_count, then for each group pop (count, values...).
+             * Flatten into (args... argc). */
+            value_t ngroups_val = vm_pop(vm);
+            int ngroups = (int)value_to_integer(&ngroups_val);
+            value_destroy(&ngroups_val);
+
+            /* Collect all groups in reverse order */
+            int total_args = 0;
+            int gi;
+
+            /* First pass: pop all groups and their values into a temp array */
+            typedef struct {
+                value_t *values;
+                int count;
+            } word_group;
+            word_group *groups = xcalloc(ngroups ? (size_t)ngroups : 1, sizeof(word_group));
+
+            for (gi = ngroups - 1; gi >= 0; gi--) {
+                value_t count_val = vm_pop(vm);
+                int count = (int)value_to_integer(&count_val);
+                value_destroy(&count_val);
+                groups[gi].count = count;
+                groups[gi].values = xcalloc(count ? (size_t)count : 1, sizeof(value_t));
+                int vi;
+                for (vi = count - 1; vi >= 0; vi--) {
+                    groups[gi].values[vi] = vm_pop(vm);
+                }
+                total_args += count;
+            }
+
+            /* Second pass: push all values in order, then argc */
+            for (gi = 0; gi < ngroups; gi++) {
+                int vi;
+                for (vi = 0; vi < groups[gi].count; vi++) {
+                    vm_push(vm, groups[gi].values[vi]);
+                }
+                free(groups[gi].values);
+            }
+            free(groups);
+
+            vm_push(vm, value_integer(total_args));
             break;
         }
 

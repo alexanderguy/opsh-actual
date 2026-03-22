@@ -523,6 +523,7 @@ static word_part_t *parse_word_units(lexer_t *lex, bool in_dquote, strbuf_t *raw
         if (literal.length > 0) {                                                                  \
             word_part_t *wu = lexer_alloc(lex, sizeof(*wu));                                       \
             wu->type = WP_LITERAL;                                                                 \
+            wu->quoted = in_dquote;                                                                \
             wu->part.string = strbuf_detach(&literal);                                             \
             *tail = wu;                                                                            \
             tail = &wu->next;                                                                      \
@@ -570,6 +571,7 @@ static word_part_t *parse_word_units(lexer_t *lex, bool in_dquote, strbuf_t *raw
                 lexer_advance(lex);
                 FLUSH_LITERAL();
                 word_part_t *wu = parse_dollar(lex);
+                wu->quoted = in_dquote;
                 *tail = wu;
                 tail = &wu->next;
                 continue;
@@ -581,6 +583,7 @@ static word_part_t *parse_word_units(lexer_t *lex, bool in_dquote, strbuf_t *raw
                 lexer_advance(lex);
                 FLUSH_LITERAL();
                 word_part_t *wu = parse_backtick(lex);
+                wu->quoted = in_dquote;
                 *tail = wu;
                 tail = &wu->next;
                 continue;
@@ -599,12 +602,16 @@ static word_part_t *parse_word_units(lexer_t *lex, bool in_dquote, strbuf_t *raw
         }
 
         if (c == '\'') {
+            /* Flush any unquoted literal before the quote */
+            FLUSH_LITERAL();
             if (raw) {
                 strbuf_append_byte(raw, '\'');
             }
             lexer_advance(lex);
             /* Single-quoted string: everything is literal until closing ' */
             {
+                strbuf_t sq_literal;
+                strbuf_init(&sq_literal);
                 bool found_close = false;
                 while (lex->pos < lex->length) {
                     c = lexer_char(lex);
@@ -616,7 +623,7 @@ static word_part_t *parse_word_units(lexer_t *lex, bool in_dquote, strbuf_t *raw
                         found_close = true;
                         break;
                     }
-                    strbuf_append_byte(&literal, c);
+                    strbuf_append_byte(&sq_literal, c);
                     if (raw) {
                         strbuf_append_byte(raw, c);
                     }
@@ -624,6 +631,16 @@ static word_part_t *parse_word_units(lexer_t *lex, bool in_dquote, strbuf_t *raw
                 }
                 if (!found_close) {
                     lexer_error(lex, "missing closing single quote");
+                }
+                if (sq_literal.length > 0) {
+                    word_part_t *wu = lexer_alloc(lex, sizeof(*wu));
+                    wu->type = WP_LITERAL;
+                    wu->quoted = true; /* single-quoted content is always quoted */
+                    wu->part.string = strbuf_detach(&sq_literal);
+                    *tail = wu;
+                    tail = &wu->next;
+                } else {
+                    strbuf_destroy(&sq_literal);
                 }
             }
             continue;
@@ -714,6 +731,7 @@ static word_part_t *parse_word_units(lexer_t *lex, bool in_dquote, strbuf_t *raw
     if (literal.length > 0) {
         word_part_t *wu = lexer_alloc(lex, sizeof(*wu));
         wu->type = WP_LITERAL;
+        wu->quoted = in_dquote;
         wu->part.string = strbuf_detach(&literal);
         *tail = wu;
     } else {
