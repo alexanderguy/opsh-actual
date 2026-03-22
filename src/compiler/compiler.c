@@ -7,15 +7,29 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static void compiler_init(compiler_t *cc, const char *filename)
 {
     memset(cc, 0, sizeof(*cc));
     cc->image = image_new();
-    cc->error_count = 0;
     cc->filename = filename;
-    cc->loop_depth = 0;
-    cc->func_count = 0;
+    ht_init(&cc->imported);
+
+    /* Extract script directory for module resolution */
+    {
+        const char *last_slash = strrchr(filename, '/');
+        if (last_slash != NULL) {
+            size_t dir_len = (size_t)(last_slash - filename);
+            char *dir = xmalloc(dir_len + 1);
+            memcpy(dir, filename, dir_len);
+            dir[dir_len] = '\0';
+            cc->script_dir = dir;
+        } else {
+            cc->script_dir = xmalloc(2);
+            strcpy((char *)cc->script_dir, ".");
+        }
+    }
 }
 
 static bool is_local_var(compiler_t *cc, const char *name)
@@ -352,11 +366,102 @@ static const char *literal_value(word_part_t *w)
 /*
  * Compile a simple command.
  */
+/*
+ * Resolve a module name to a file path.
+ * Tries: script_dir/lib/name.opsh, then $OPSH_LOADPATH entries.
+ * Returns a malloc'd string or NULL.
+ */
+static char *resolve_module(compiler_t *cc, const char *name)
+{
+    char path[4096];
+    struct stat st;
+
+    /* Try script_dir/lib/name.opsh */
+    snprintf(path, sizeof(path), "%s/lib/%s.opsh", cc->script_dir, name);
+    if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+        char *result = xmalloc(strlen(path) + 1);
+        strcpy(result, path);
+        return result;
+    }
+
+    /* Try $OPSH_LOADPATH */
+    const char *loadpath = getenv("OPSH_LOADPATH");
+    if (loadpath != NULL) {
+        const char *p = loadpath;
+        while (*p) {
+            const char *sep = strchr(p, ':');
+            size_t dir_len = sep ? (size_t)(sep - p) : strlen(p);
+            if (dir_len > 0) {
+                snprintf(path, sizeof(path), "%.*s/%s.opsh", (int)dir_len, p, name);
+                if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+                    char *result = xmalloc(strlen(path) + 1);
+                    strcpy(result, path);
+                    return result;
+                }
+            }
+            if (sep) {
+                p = sep + 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+/*
+ * Read a file into a malloc'd string. Returns NULL on failure.
+ */
+static char *read_file_contents(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (f == NULL) {
+        return NULL;
+    }
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (len < 0) {
+        fclose(f);
+        return NULL;
+    }
+    char *buf = xmalloc((size_t)len + 1);
+    if (len > 0) {
+        size_t nread = fread(buf, 1, (size_t)len, f);
+        buf[nread] = '\0';
+    } else {
+        buf[0] = '\0';
+    }
+    fclose(f);
+    return buf;
+}
+
+/*
+ * Compile a module import. Resolves the module file, parses and compiles
+ * it into the same bytecode image, and registers its functions.
+ */
+static void compile_import(compiler_t *cc, const char *module_name, unsigned int lineno);
+
 static void compile_simple(compiler_t *cc, command_t *cmd)
 {
     size_t i;
     plist_t *assigns = &cmd->u.simple.assigns;
     plist_t *words = &cmd->u.simple.words;
+
+    /* Intercept lib::import as a compile-time directive */
+    if (words->length >= 2) {
+        word_part_t *cmd_word = plist_get(words, 0);
+        if (is_literal_word(cmd_word) && strcmp(literal_value(cmd_word), "lib::import") == 0) {
+            word_part_t *mod_word = plist_get(words, 1);
+            if (is_literal_word(mod_word)) {
+                compile_import(cc, literal_value(mod_word), cmd->lineno);
+            } else {
+                compiler_error(cc, cmd->lineno, "lib::import requires a literal module name");
+            }
+            return;
+        }
+    }
 
     /* Compile assignments */
     for (i = 0; i < assigns->length; i++) {
@@ -1049,6 +1154,133 @@ static void compile_program(compiler_t *cc, sh_list_t *program)
     }
 }
 
+/*
+ * Compile a module import.
+ */
+static void compile_import(compiler_t *cc, const char *module_name, unsigned int lineno)
+{
+    /* Check if already imported */
+    if (ht_get(&cc->imported, module_name) != NULL) {
+        return; /* already compiled */
+    }
+
+    /* Circular dependency check */
+    {
+        int di;
+        for (di = 0; di < cc->import_depth; di++) {
+            if (strcmp(cc->import_stack[di], module_name) == 0) {
+                char buf[256];
+                snprintf(buf, sizeof(buf), "circular dependency: module '%s'", module_name);
+                compiler_error(cc, lineno, buf);
+                return;
+            }
+        }
+    }
+
+    if (cc->import_depth >= MAX_IMPORT_DEPTH) {
+        compiler_error(cc, lineno, "import nesting too deep");
+        return;
+    }
+
+    /* Resolve module file */
+    char *path = resolve_module(cc, module_name);
+    if (path == NULL) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "module '%s' not found", module_name);
+        compiler_error(cc, lineno, buf);
+        return;
+    }
+
+    /* Read module source */
+    char *source = read_file_contents(path);
+    if (source == NULL) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "cannot read module '%s'", module_name);
+        compiler_error(cc, lineno, buf);
+        free(path);
+        return;
+    }
+
+    /* Push onto import stack (for circular dep detection during parse) */
+    cc->import_stack[cc->import_depth] = xmalloc(strlen(module_name) + 1);
+    strcpy(cc->import_stack[cc->import_depth], module_name);
+    cc->import_depth++;
+
+    /* Parse the module */
+    parser_t p;
+    parser_init(&p, source, path);
+    sh_list_t *ast = parser_parse(&p);
+
+    if (parser_error_count(&p) > 0) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "errors in module '%s'", module_name);
+        compiler_error(cc, lineno, buf);
+        sh_list_free(ast);
+        parser_destroy(&p);
+        free(source);
+        free(path);
+        cc->import_depth--;
+        free(cc->import_stack[cc->import_depth]);
+        return;
+    }
+
+    /* Mark as imported now (after successful parse) */
+    {
+        char *key = xmalloc(strlen(module_name) + 1);
+        strcpy(key, module_name);
+        ht_set(&cc->imported, key, (void *)1);
+    }
+
+    /* Compile the module's code as a sub-segment.
+     * JMP over the init code, compile the module body, HALT.
+     * The init code runs once when OP_IMPORT executes. */
+    size_t skip_jump = emit_jump(cc, OP_JMP);
+    size_t init_offset = cc->image->code_size;
+
+    /* Save/restore the filename for error reporting */
+    const char *saved_filename = cc->filename;
+    cc->filename = path;
+
+    compile_program(cc, ast);
+    image_emit_u8(cc->image, OP_HALT);
+
+    cc->filename = saved_filename;
+
+    patch_jump(cc, skip_jump);
+
+    /* Record the module */
+    if (cc->module_count < MAX_IMPORT_DEPTH * 4) {
+        cc->modules[cc->module_count].name = xmalloc(strlen(module_name) + 1);
+        strcpy(cc->modules[cc->module_count].name, module_name);
+        cc->modules[cc->module_count].init_offset = init_offset;
+        cc->module_count++;
+    }
+
+    /* Emit OP_IMPORT for runtime initialization */
+    {
+        uint16_t name_idx = image_add_const(cc->image, module_name);
+        image_emit_u8(cc->image, OP_IMPORT);
+        image_emit_u16(cc->image, name_idx);
+    }
+
+    /* Pop import stack */
+    cc->import_depth--;
+    free(cc->import_stack[cc->import_depth]);
+
+    sh_list_free(ast);
+    parser_destroy(&p);
+    free(source);
+    free(path);
+}
+
+static int free_ht_key_cb(const char *key, void *value, void *ctx)
+{
+    (void)value;
+    (void)ctx;
+    free((void *)key);
+    return 0;
+}
+
 bytecode_image_t *compile(sh_list_t *program, const char *filename)
 {
     compiler_t cc;
@@ -1064,6 +1296,12 @@ bytecode_image_t *compile(sh_list_t *program, const char *filename)
         for (i = 0; i < cc.func_count; i++) {
             free(cc.func_table[i].name);
         }
+        for (i = 0; i < cc.module_count; i++) {
+            free(cc.modules[i].name);
+        }
+        ht_foreach(&cc.imported, free_ht_key_cb, NULL);
+        ht_destroy(&cc.imported);
+        free((void *)cc.script_dir);
         return NULL;
     }
 
@@ -1074,10 +1312,24 @@ bytecode_image_t *compile(sh_list_t *program, const char *filename)
         image->funcs = xmalloc((size_t)cc.func_count * sizeof(vm_func_t));
         image->func_count = cc.func_count;
         for (i = 0; i < cc.func_count; i++) {
-            image->funcs[i].name = cc.func_table[i].name; /* transfer ownership */
+            image->funcs[i].name = cc.func_table[i].name;
             image->funcs[i].bytecode_offset = cc.func_table[i].bytecode_offset;
         }
     }
+
+    /* Transfer module table to the image */
+    if (cc.module_count > 0) {
+        image->modules = xmalloc((size_t)cc.module_count * sizeof(vm_module_t));
+        image->module_count = cc.module_count;
+        for (i = 0; i < cc.module_count; i++) {
+            image->modules[i].name = cc.modules[i].name;
+            image->modules[i].init_offset = cc.modules[i].init_offset;
+        }
+    }
+
+    ht_foreach(&cc.imported, free_ht_key_cb, NULL);
+    ht_destroy(&cc.imported);
+    free((void *)cc.script_dir);
 
     return image;
 }

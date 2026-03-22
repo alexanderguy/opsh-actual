@@ -21,6 +21,14 @@ typedef struct {
 } vm_func_t;
 
 /*
+ * Module table entry.
+ */
+typedef struct {
+    const char *name;   /* owned by the image */
+    size_t init_offset; /* bytecode offset of init code */
+} vm_module_t;
+
+/*
  * Bytecode image: constant pool + bytecode segments.
  */
 typedef struct {
@@ -35,6 +43,10 @@ typedef struct {
     /* Function table (compiled functions) */
     vm_func_t *funcs;
     int func_count;
+
+    /* Module table (compiled modules) */
+    vm_module_t *modules;
+    int module_count;
 } bytecode_image_t;
 
 #define VM_CALL_STACK_MAX 256
@@ -107,6 +119,8 @@ typedef struct vm {
     char *captured_stdout; /* if non-NULL, builtins write here */
     size_t captured_stdout_len;
     size_t captured_stdout_cap;
+
+    hashtable_t modules_loaded; /* module name -> (void*)1 (already initialized?) */
 
     bool halted;
     bool return_requested; /* set by `return` builtin to trigger OP_RET */
