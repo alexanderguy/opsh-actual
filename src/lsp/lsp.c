@@ -4,6 +4,7 @@
 #include "foundation/json.h"
 #include "foundation/strbuf.h"
 #include "foundation/util.h"
+#include "lint/lint.h"
 #include "parser/parser.h"
 
 #include <stdio.h>
@@ -329,13 +330,28 @@ static void send_result(int64_t id, const char *result_json)
     strbuf_destroy(&buf);
 }
 
+/* Map lint severity to LSP severity (1=Error, 2=Warning, 3=Info, 4=Hint) */
+static int lint_severity_to_lsp(lint_severity_t sev)
+{
+    switch (sev) {
+    case LINT_ERROR:
+        return 1;
+    case LINT_WARNING:
+        return 2;
+    case LINT_INFO:
+        return 3;
+    case LINT_STYLE:
+        return 4;
+    }
+    return 3;
+}
+
 /* Publish diagnostics for a document */
 static void publish_diagnostics(const char *uri, const char *text)
 {
     parser_t p;
     parser_init(&p, text, uri);
     sh_list_t *ast = parser_parse(&p);
-    sh_list_free(ast);
 
     strbuf_t buf;
     strbuf_init(&buf);
@@ -346,31 +362,62 @@ static void publish_diagnostics(const char *uri, const char *text)
     json_key_string(&buf, "uri", uri);
     strbuf_append_str(&buf, ",\"diagnostics\":[");
 
+    bool has_diag = false;
+
+    /* Parser errors */
     {
         int i;
-        /* Use p.error_count (parser errors only), not parser_error_count
-         * which includes lexer errors that aren't in the errors array */
         int n = p.error_count;
         if (n > MAX_PARSE_ERRORS) {
             n = MAX_PARSE_ERRORS;
         }
         for (i = 0; i < n; i++) {
-            if (i > 0) {
+            if (has_diag) {
                 strbuf_append_byte(&buf, ',');
             }
+            has_diag = true;
             parse_error_t *e = &p.errors[i];
-            unsigned int line = e->lineno > 0 ? e->lineno - 1 : 0; /* LSP is 0-based */
+            unsigned int line = e->lineno > 0 ? e->lineno - 1 : 0;
             strbuf_append_byte(&buf, '{');
             strbuf_append_str(&buf, "\"range\":{\"start\":{");
             strbuf_append_printf(
                 &buf, "\"line\":%u,\"character\":0},\"end\":{\"line\":%u,\"character\":999}}", line,
                 line);
             json_key_string(&buf, "message", e->message);
-            json_key_int(&buf, "severity", 1); /* Error */
+            json_key_int(&buf, "severity", 1);
             strbuf_append_byte(&buf, '}');
         }
     }
 
+    /* Lint diagnostics (only if parse succeeded) */
+    if (parser_error_count(&p) == 0 && ast != NULL) {
+        lint_diag_t *diags = lint_check(ast, uri);
+        const lint_diag_t *d = diags;
+        while (d != NULL) {
+            if (has_diag) {
+                strbuf_append_byte(&buf, ',');
+            }
+            has_diag = true;
+            unsigned int line = d->lineno > 0 ? d->lineno - 1 : 0;
+            strbuf_append_byte(&buf, '{');
+            strbuf_append_str(&buf, "\"range\":{\"start\":{");
+            strbuf_append_printf(
+                &buf, "\"line\":%u,\"character\":0},\"end\":{\"line\":%u,\"character\":999}}", line,
+                line);
+            /* Include SC code in message for easy identification */
+            {
+                char msg_buf[600];
+                snprintf(msg_buf, sizeof(msg_buf), "SC%04d: %s", d->code, d->message);
+                json_key_string(&buf, "message", msg_buf);
+            }
+            json_key_int(&buf, "severity", lint_severity_to_lsp(d->severity));
+            strbuf_append_byte(&buf, '}');
+            d = d->next;
+        }
+        lint_diag_free(diags);
+    }
+
+    sh_list_free(ast);
     strbuf_append_str(&buf, "]}}");
     send_response(buf.contents);
     strbuf_destroy(&buf);
