@@ -415,6 +415,56 @@ static char *resolve_module(compiler_t *cc, const char *name)
 }
 
 /*
+ * Emit REDIR_SAVE and all redirection opcodes for a command's redirs list.
+ */
+static void compile_redirs_open(compiler_t *cc, io_redir_t *redirs, unsigned int lineno)
+{
+    io_redir_t *rd;
+    image_emit_u8(cc->image, OP_REDIR_SAVE);
+    for (rd = redirs; rd != NULL; rd = rd->next) {
+        switch (rd->type) {
+        case REDIR_IN:
+        case REDIR_OUT:
+        case REDIR_APPEND:
+        case REDIR_CLOBBER:
+        case REDIR_RDWR:
+            compile_word(cc, rd->target, lineno);
+            image_emit_u8(cc->image, OP_REDIR_OPEN);
+            image_emit_u8(cc->image, (uint8_t)rd->fd);
+            image_emit_u8(cc->image, (uint8_t)rd->type);
+            break;
+        case REDIR_DUPIN:
+        case REDIR_DUPOUT:
+            compile_word(cc, rd->target, lineno);
+            image_emit_u8(cc->image, OP_REDIR_DUP);
+            image_emit_u8(cc->image, (uint8_t)rd->fd);
+            image_emit_u8(cc->image, 0);
+            break;
+        case REDIR_CLOSE:
+            image_emit_u8(cc->image, OP_REDIR_CLOSE);
+            image_emit_u8(cc->image, (uint8_t)rd->fd);
+            break;
+        case REDIR_HEREDOC:
+        case REDIR_HEREDOC_STRIP:
+        case REDIR_HERESTR:
+            if (rd->heredoc_body != NULL) {
+                compile_word(cc, rd->heredoc_body, lineno);
+            } else if (rd->target != NULL) {
+                compile_word(cc, rd->target, lineno);
+            } else {
+                uint16_t empty = image_add_const(cc->image, "");
+                image_emit_u8(cc->image, OP_PUSH_CONST);
+                image_emit_u16(cc->image, empty);
+            }
+            image_emit_u8(cc->image, OP_REDIR_HERE);
+            image_emit_u8(cc->image, (uint8_t)rd->fd);
+            image_emit_u8(cc->image, rd->heredoc_expand ? 1 : 0);
+            break;
+        }
+    }
+}
+
+/*
  * Compile a module import. Resolves the module file, parses and compiles
  * it into the same bytecode image, and registers its functions.
  */
@@ -585,56 +635,7 @@ static void compile_simple(compiler_t *cc, command_t *cmd)
         builtin_idx = builtin_lookup(literal_value(cmd_word));
     }
 
-    image_emit_u8(cc->image, OP_REDIR_SAVE);
-
-    /* Emit redirections */
-    {
-        io_redir_t *rd;
-        for (rd = cmd->redirs; rd != NULL; rd = rd->next) {
-            switch (rd->type) {
-            case REDIR_IN:
-            case REDIR_OUT:
-            case REDIR_APPEND:
-            case REDIR_CLOBBER:
-            case REDIR_RDWR:
-                /* Push filename onto stack, then REDIR_OPEN */
-                compile_word(cc, rd->target, cmd->lineno);
-                image_emit_u8(cc->image, OP_REDIR_OPEN);
-                image_emit_u8(cc->image, (uint8_t)rd->fd);
-                image_emit_u8(cc->image, (uint8_t)rd->type);
-                break;
-            case REDIR_DUPIN:
-            case REDIR_DUPOUT:
-                /* Push target FD string, then REDIR_DUP */
-                compile_word(cc, rd->target, cmd->lineno);
-                image_emit_u8(cc->image, OP_REDIR_DUP);
-                image_emit_u8(cc->image, (uint8_t)rd->fd);
-                image_emit_u8(cc->image, 0); /* direction flag */
-                break;
-            case REDIR_CLOSE:
-                image_emit_u8(cc->image, OP_REDIR_CLOSE);
-                image_emit_u8(cc->image, (uint8_t)rd->fd);
-                break;
-            case REDIR_HEREDOC:
-            case REDIR_HEREDOC_STRIP:
-            case REDIR_HERESTR:
-                /* Push here-doc content, then REDIR_HERE */
-                if (rd->heredoc_body != NULL) {
-                    compile_word(cc, rd->heredoc_body, cmd->lineno);
-                } else if (rd->target != NULL) {
-                    compile_word(cc, rd->target, cmd->lineno);
-                } else {
-                    uint16_t empty = image_add_const(cc->image, "");
-                    image_emit_u8(cc->image, OP_PUSH_CONST);
-                    image_emit_u16(cc->image, empty);
-                }
-                image_emit_u8(cc->image, OP_REDIR_HERE);
-                image_emit_u8(cc->image, (uint8_t)rd->fd);
-                image_emit_u8(cc->image, rd->heredoc_expand ? 1 : 0);
-                break;
-            }
-        }
-    }
+    compile_redirs_open(cc, cmd->redirs, cmd->lineno);
 
     /* Compile each word as a (values... count) group.
      * Unquoted words with expansions get SPLIT_FIELDS.
@@ -1295,44 +1296,7 @@ static void compile_cond_expr(compiler_t *cc, cond_expr_t *d, unsigned int linen
 
 static void compile_bracket(compiler_t *cc, command_t *cmd)
 {
-    /* Handle redirections if present */
-    if (cmd->redirs != NULL) {
-        image_emit_u8(cc->image, OP_REDIR_SAVE);
-        io_redir_t *rd;
-        for (rd = cmd->redirs; rd != NULL; rd = rd->next) {
-            switch (rd->type) {
-            case REDIR_IN:
-            case REDIR_OUT:
-            case REDIR_APPEND:
-            case REDIR_CLOBBER:
-            case REDIR_RDWR:
-                compile_word(cc, rd->target, cmd->lineno);
-                image_emit_u8(cc->image, OP_REDIR_OPEN);
-                image_emit_u8(cc->image, (uint8_t)rd->fd);
-                image_emit_u8(cc->image, (uint8_t)rd->type);
-                break;
-            case REDIR_DUPIN:
-            case REDIR_DUPOUT:
-                compile_word(cc, rd->target, cmd->lineno);
-                image_emit_u8(cc->image, OP_REDIR_DUP);
-                image_emit_u8(cc->image, (uint8_t)rd->fd);
-                image_emit_u8(cc->image, 0);
-                break;
-            case REDIR_CLOSE:
-                image_emit_u8(cc->image, OP_REDIR_CLOSE);
-                image_emit_u8(cc->image, (uint8_t)rd->fd);
-                break;
-            default:
-                break;
-            }
-        }
-    }
-
     compile_cond_expr(cc, cmd->u.cond.expr, cmd->lineno);
-
-    if (cmd->redirs != NULL) {
-        image_emit_u8(cc->image, OP_REDIR_RESTORE);
-    }
 }
 
 /*
@@ -1342,6 +1306,14 @@ static void compile_command(compiler_t *cc, command_t *cmd)
 {
     if (cmd == NULL) {
         return;
+    }
+
+    /* Handle redirections generically for compound commands.
+     * CT_SIMPLE is excluded because it interleaves redirections
+     * with word evaluation and handles them inline. */
+    bool has_redirs = (cmd->redirs != NULL && cmd->type != CT_SIMPLE);
+    if (has_redirs) {
+        compile_redirs_open(cc, cmd->redirs, cmd->lineno);
     }
 
     switch (cmd->type) {
@@ -1370,54 +1342,6 @@ static void compile_command(compiler_t *cc, command_t *cmd)
         compile_funcdef(cc, cmd);
         break;
     case CT_SUBSHELL: {
-        /* Emit redirections around the subshell (parent-side, before fork) */
-        bool has_redirs = (cmd->redirs != NULL);
-        if (has_redirs) {
-            image_emit_u8(cc->image, OP_REDIR_SAVE);
-            io_redir_t *rd;
-            for (rd = cmd->redirs; rd != NULL; rd = rd->next) {
-                switch (rd->type) {
-                case REDIR_IN:
-                case REDIR_OUT:
-                case REDIR_APPEND:
-                case REDIR_CLOBBER:
-                case REDIR_RDWR:
-                    compile_word(cc, rd->target, cmd->lineno);
-                    image_emit_u8(cc->image, OP_REDIR_OPEN);
-                    image_emit_u8(cc->image, (uint8_t)rd->fd);
-                    image_emit_u8(cc->image, (uint8_t)rd->type);
-                    break;
-                case REDIR_DUPIN:
-                case REDIR_DUPOUT:
-                    compile_word(cc, rd->target, cmd->lineno);
-                    image_emit_u8(cc->image, OP_REDIR_DUP);
-                    image_emit_u8(cc->image, (uint8_t)rd->fd);
-                    image_emit_u8(cc->image, 0);
-                    break;
-                case REDIR_CLOSE:
-                    image_emit_u8(cc->image, OP_REDIR_CLOSE);
-                    image_emit_u8(cc->image, (uint8_t)rd->fd);
-                    break;
-                case REDIR_HEREDOC:
-                case REDIR_HEREDOC_STRIP:
-                case REDIR_HERESTR:
-                    if (rd->heredoc_body != NULL) {
-                        compile_word(cc, rd->heredoc_body, cmd->lineno);
-                    } else if (rd->target != NULL) {
-                        compile_word(cc, rd->target, cmd->lineno);
-                    } else {
-                        uint16_t empty = image_add_const(cc->image, "");
-                        image_emit_u8(cc->image, OP_PUSH_CONST);
-                        image_emit_u16(cc->image, empty);
-                    }
-                    image_emit_u8(cc->image, OP_REDIR_HERE);
-                    image_emit_u8(cc->image, (uint8_t)rd->fd);
-                    image_emit_u8(cc->image, rd->heredoc_expand ? 1 : 0);
-                    break;
-                }
-            }
-        }
-
         /* JMP over the sub-segment */
         size_t skip_jump = emit_jump(cc, OP_JMP);
         size_t sub_offset = cc->image->code_size;
@@ -1438,15 +1362,15 @@ static void compile_command(compiler_t *cc, command_t *cmd)
             image_emit_u8(cc->image, (uint8_t)((uoff >> 16) & 0xFF));
             image_emit_u8(cc->image, (uint8_t)((uoff >> 24) & 0xFF));
         }
-
-        if (has_redirs) {
-            image_emit_u8(cc->image, OP_REDIR_RESTORE);
-        }
         break;
     }
     case CT_BRACKET:
         compile_bracket(cc, cmd);
         break;
+    }
+
+    if (has_redirs) {
+        image_emit_u8(cc->image, OP_REDIR_RESTORE);
     }
 }
 
