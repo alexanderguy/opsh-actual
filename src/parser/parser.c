@@ -73,7 +73,7 @@ static void skip_newlines(parser_t *p)
 {
     while (peek(p)->type == TOK_NEWLINE) {
         consume(p);
-        if (p->pending_heredoc_count > 0 && p->error_count == 0) {
+        if (p->pending_heredoc_count > 0 && p->error_count == 0 && p->lexer.error_count == 0) {
             drain_heredocs(p);
         }
     }
@@ -330,7 +330,8 @@ static sh_list_t *parse_list(parser_t *p)
             /* Drain pending here-doc bodies only after newlines, not after ;
              * Per POSIX, here-doc bodies follow the newline that terminates
              * the command line, not semicolons within the line. */
-            if (sep == TOK_NEWLINE && p->pending_heredoc_count > 0) {
+            if (sep == TOK_NEWLINE && p->pending_heredoc_count > 0 && p->error_count == 0 &&
+                p->lexer.error_count == 0) {
                 drain_heredocs(p);
             }
             skip_newlines(p);
@@ -1370,7 +1371,7 @@ sh_list_t *parser_parse(parser_t *p)
     /* Drain any pending here-docs that weren't followed by a newline.
      * Skip if there were parse errors since the redir targets may
      * have been freed. */
-    if (p->pending_heredoc_count > 0 && p->error_count == 0) {
+    if (p->pending_heredoc_count > 0 && p->error_count == 0 && p->lexer.error_count == 0) {
         drain_heredocs(p);
     }
     if (peek(p)->type != TOK_EOF) {
