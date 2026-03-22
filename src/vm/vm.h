@@ -128,6 +128,7 @@ typedef struct vm {
     int64_t next_command_id;  /* monotonic command ID counter */
 
     bool halted;
+    bool exit_requested;   /* set by `exit` builtin (distinct from OP_HALT) */
     bool return_requested; /* set by `return` builtin to trigger OP_RET */
 
     const char *script_name; /* $0 */
