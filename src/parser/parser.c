@@ -73,7 +73,7 @@ static void skip_newlines(parser_t *p)
 {
     while (peek(p)->type == TOK_NEWLINE) {
         consume(p);
-        if (p->pending_heredoc_count > 0) {
+        if (p->pending_heredoc_count > 0 && p->error_count == 0) {
             drain_heredocs(p);
         }
     }
@@ -1367,8 +1367,10 @@ void parser_destroy(parser_t *p)
 sh_list_t *parser_parse(parser_t *p)
 {
     sh_list_t *result = parse_list(p);
-    /* Drain any pending here-docs that weren't followed by a newline */
-    if (p->pending_heredoc_count > 0) {
+    /* Drain any pending here-docs that weren't followed by a newline.
+     * Skip if there were parse errors since the redir targets may
+     * have been freed. */
+    if (p->pending_heredoc_count > 0 && p->error_count == 0) {
         drain_heredocs(p);
     }
     if (peek(p)->type != TOK_EOF) {
