@@ -1104,7 +1104,7 @@ int vm_run(vm_t *vm)
                 if (pv != NULL) {
                     vm_push(vm, value_clone(&pv->value));
                 } else {
-                    vm_push(vm, value_string(xstrdup("")));
+                    vm_push(vm, value_string(rcstr_new("")));
                 }
             }
             vm_push(vm, value_integer(count));
@@ -1118,23 +1118,30 @@ int vm_run(vm_t *vm)
             value_t v = vm_pop(vm);
             char *s = value_to_string(&v);
             value_destroy(&v);
-            if (s[0] == '~' && (s[1] == '/' || s[1] == '\0')) {
-                const char *home = getenv("HOME");
-                if (home != NULL) {
-                    strbuf_t result;
-                    strbuf_init(&result);
-                    strbuf_append_str(&result, home);
-                    if (s[1] != '\0') {
-                        strbuf_append_str(&result, s + 1);
+            const char *home = getenv("HOME");
+
+            if (s[0] == '~' && (s[1] == '/' || s[1] == '\0' || s[1] == ':') && home != NULL) {
+                strbuf_t result;
+                strbuf_init(&result);
+                /* Expand leading tilde */
+                strbuf_append_str(&result, home);
+                /* Process rest of string, expanding ~ after : */
+                const char *p = s + 1;
+                while (*p) {
+                    if (*p == ':' && p[1] == '~' && (p[2] == '/' || p[2] == '\0' || p[2] == ':')) {
+                        strbuf_append_byte(&result, ':');
+                        strbuf_append_str(&result, home);
+                        p += 2;
+                    } else {
+                        strbuf_append_byte(&result, *p);
+                        p++;
                     }
-                    rcstr_release(s);
-                    {
-                        char *tmp = strbuf_detach(&result);
-                        vm_push(vm, value_string(rcstr_new(tmp)));
-                        free(tmp);
-                    }
-                } else {
-                    vm_push(vm, value_string(s));
+                }
+                rcstr_release(s);
+                {
+                    char *tmp = strbuf_detach(&result);
+                    vm_push(vm, value_string(rcstr_new(tmp)));
+                    free(tmp);
                 }
             } else {
                 vm_push(vm, value_string(s));
