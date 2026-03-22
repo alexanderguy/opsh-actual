@@ -24,7 +24,7 @@ BUILTIN_SRCS = src/builtins/builtins.c
 COMPILER_SRCS = src/compiler/compiler.c
 AGENT_SRCS = src/agent/event.c
 FORMAT_SRCS = src/format/format.c
-LINT_SRCS = src/lint/lint.c
+LINT_SRCS = src/lint/lint.c src/lint/checks.c
 LSP_SRCS = src/lsp/lsp.c
 MAIN_SRCS = src/main.c
 

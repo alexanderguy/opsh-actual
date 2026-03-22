@@ -312,6 +312,7 @@ static word_part_t *parse_cmdsub(lexer_t *lex)
     word_part_t *wu = lexer_alloc(lex, sizeof(*wu));
     wu->type = WP_CMDSUB;
     wu->part.cmdsub.is_preparsed = false;
+    wu->part.cmdsub.is_backtick = false;
 
     strbuf_t content;
     strbuf_init(&content);
@@ -475,6 +476,7 @@ static word_part_t *parse_backtick(lexer_t *lex)
     word_part_t *wu = lexer_alloc(lex, sizeof(*wu));
     wu->type = WP_CMDSUB;
     wu->part.cmdsub.is_preparsed = false;
+    wu->part.cmdsub.is_backtick = true;
 
     strbuf_t content;
     strbuf_init(&content);

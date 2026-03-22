@@ -35,6 +35,7 @@ struct comment {
  */
 typedef struct {
     bool is_preparsed;
+    bool is_backtick;
     union {
         sh_list_t *preparsed;
         char *unparsed;
