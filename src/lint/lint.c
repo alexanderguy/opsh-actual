@@ -2,128 +2,16 @@
 
 #include "foundation/json.h"
 #include "foundation/util.h"
+#include "lint/checks.h"
 #include "parser/parser.h"
 
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-/* Lint context: accumulates diagnostics during AST walk */
-typedef struct {
-    const char *filename;
-    lint_diag_t *diags;
-    lint_diag_t **tail;
-    int count;
-} lint_ctx_t;
-
-static void ctx_init(lint_ctx_t *ctx, const char *filename)
-{
-    ctx->filename = filename;
-    ctx->diags = NULL;
-    ctx->tail = &ctx->diags;
-    ctx->count = 0;
-}
-
-static void emit_diag(lint_ctx_t *ctx, int code, lint_severity_t sev, unsigned int lineno,
-                      const char *fmt, ...) __attribute__((format(printf, 5, 6)));
-
-static void emit_diag(lint_ctx_t *ctx, int code, lint_severity_t sev, unsigned int lineno,
-                      const char *fmt, ...)
-{
-    lint_diag_t *d = xcalloc(1, sizeof(*d));
-    d->code = code;
-    d->severity = sev;
-    d->filename = ctx->filename;
-    d->lineno = lineno;
-    d->column = 0;
-
-    char buf[512];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    d->message = xmalloc(strlen(buf) + 1);
-    strcpy(d->message, buf);
-
-    d->next = NULL;
-    *ctx->tail = d;
-    ctx->tail = &d->next;
-    ctx->count++;
-}
-
 /*
- * Check helpers
- */
-
-/* Return the literal string value of a simple word, or NULL if not a plain literal */
-static const char *word_literal(const word_part_t *w)
-{
-    if (w == NULL) {
-        return NULL;
-    }
-    if (w->type != WP_LITERAL || w->next != NULL) {
-        return NULL;
-    }
-    return w->part.string;
-}
-
-/*
- * SC2086: Double quote to prevent globbing and word splitting.
- *
- * Fires on unquoted parameter expansions in command argument positions.
- * Skips: command name (index 0), assignments, special params ($?, $#, $!).
- */
-static void check_word_quoting(lint_ctx_t *ctx, const word_part_t *w, unsigned int lineno)
-{
-    while (w != NULL) {
-        if (w->type == WP_PARAM && !w->quoted) {
-            const char *name = w->part.param->name;
-            /* Skip single-char special params that don't word-split */
-            if (name[0] != '\0' && name[1] == '\0') {
-                char ch = name[0];
-                if (ch == '?' || ch == '!' || ch == '#' || ch == '$' || ch == '-') {
-                    w = w->next;
-                    continue;
-                }
-                /* $@ and $* get SC2048 instead */
-                if (ch == '@' || ch == '*') {
-                    emit_diag(ctx, 2048, LINT_WARNING, lineno,
-                              "Use \"$%c\" (with quotes) to prevent whitespace problems", ch);
-                    w = w->next;
-                    continue;
-                }
-            }
-            emit_diag(ctx, 2086, LINT_INFO, lineno,
-                      "Double quote to prevent globbing and word splitting");
-        }
-        /* Recurse into arithmetic and command substitution */
-        if (w->type == WP_CMDSUB && w->part.cmdsub.is_preparsed) {
-            /* Command substitution bodies are checked by the main walker */
-        }
-        w = w->next;
-    }
-}
-
-/*
- * SC2164: Use 'cd ... || exit' in case cd fails.
- *
- * Fires when cd is a simple command not guarded by || on the right side.
- */
-static bool is_cd_guarded(const command_t *cmd, const and_or_t *pl)
-{
-    (void)cmd;
-    /* If this pipeline has a || successor, cd is guarded */
-    if (pl->next != NULL && !pl->connector) {
-        /* connector=false means || connector to next pipeline */
-        return true;
-    }
-    return false;
-}
-
-/*
- * AST walker
+ * AST walker — traverses the tree and calls into checks at each node.
  */
 static void walk_sh_list(lint_ctx_t *ctx, const sh_list_t *ao);
 static void walk_command(lint_ctx_t *ctx, const command_t *cmd, const and_or_t *pl);
@@ -131,6 +19,7 @@ static void walk_command(lint_ctx_t *ctx, const command_t *cmd, const and_or_t *
 static void walk_sh_list(lint_ctx_t *ctx, const sh_list_t *ao)
 {
     while (ao != NULL) {
+        checks_on_sh_list(ctx, ao);
         const and_or_t *pl = ao->pipelines;
         while (pl != NULL) {
             const command_t *cmd = pl->commands;
@@ -144,27 +33,44 @@ static void walk_sh_list(lint_ctx_t *ctx, const sh_list_t *ao)
     }
 }
 
+static void walk_word_parts(lint_ctx_t *ctx, const word_part_t *w, unsigned int lineno)
+{
+    checks_on_word_unit(ctx, w, lineno);
+}
+
+/* Walk redirection word units for quoting and backtick checks */
+static void walk_io_redirs(lint_ctx_t *ctx, const io_redir_t *r, unsigned int lineno)
+{
+    while (r != NULL) {
+        if (r->target != NULL) {
+            walk_word_parts(ctx, r->target, lineno);
+            checks_on_word(ctx, r->target, lineno);
+        }
+        r = r->next;
+    }
+}
+
 static void walk_command(lint_ctx_t *ctx, const command_t *cmd, const and_or_t *pl)
 {
+    /* Run compound command checks on everything */
+    checks_on_compound_command(ctx, cmd);
+
+    /* Check redirections on all command types */
+    walk_io_redirs(ctx, cmd->redirs, cmd->lineno);
+
     switch (cmd->type) {
     case CT_SIMPLE: {
-        /* Check command arguments (skip index 0 = command name) */
         size_t i;
+        /* Check all word units for backtick usage etc. */
+        for (i = 0; i < cmd->u.simple.words.length; i++) {
+            walk_word_parts(ctx, plist_get(&cmd->u.simple.words, i), cmd->lineno);
+        }
+        /* Check arguments (skip index 0 = command name) for quoting */
         for (i = 1; i < cmd->u.simple.words.length; i++) {
-            check_word_quoting(ctx, plist_get(&cmd->u.simple.words, i), cmd->lineno);
+            checks_on_word(ctx, plist_get(&cmd->u.simple.words, i), cmd->lineno);
         }
-
-        /* SC2164: cd without error guard */
-        if (cmd->u.simple.words.length > 0) {
-            const char *name = word_literal(plist_get(&cmd->u.simple.words, 0));
-            if (name != NULL && strcmp(name, "cd") == 0) {
-                /* Only check if this is the sole command in a single-command pipeline */
-                if (cmd->next == NULL && !is_cd_guarded(cmd, pl)) {
-                    emit_diag(ctx, 2164, LINT_WARNING, cmd->lineno,
-                              "Use 'cd ... || exit' in case cd fails");
-                }
-            }
-        }
+        /* Run simple command checks */
+        checks_on_simple_command(ctx, cmd, pl);
         break;
     }
     case CT_IF: {
@@ -178,40 +84,48 @@ static void walk_command(lint_ctx_t *ctx, const command_t *cmd, const and_or_t *
         }
         break;
     }
-    case CT_FOR:
-        /* Check for-list words */
-        {
-            size_t i;
-            for (i = 0; i < cmd->u.for_clause.wordlist.length; i++) {
-                check_word_quoting(ctx, plist_get(&cmd->u.for_clause.wordlist, i), cmd->lineno);
-            }
+    case CT_FOR: {
+        size_t i;
+        for (i = 0; i < cmd->u.for_clause.wordlist.length; i++) {
+            walk_word_parts(ctx, plist_get(&cmd->u.for_clause.wordlist, i), cmd->lineno);
+            checks_on_word(ctx, plist_get(&cmd->u.for_clause.wordlist, i), cmd->lineno);
         }
+        ctx->loop_depth++;
         walk_sh_list(ctx, cmd->u.for_clause.body);
+        ctx->loop_depth--;
         break;
+    }
     case CT_WHILE:
     case CT_UNTIL:
         walk_sh_list(ctx, cmd->u.while_clause.condition);
+        ctx->loop_depth++;
         walk_sh_list(ctx, cmd->u.while_clause.body);
+        ctx->loop_depth--;
         break;
-    case CT_CASE:
-        walk_sh_list(ctx, cmd->u.case_clause.items ? cmd->u.case_clause.items->body : NULL);
-        {
-            const case_item_t *ci = cmd->u.case_clause.items;
-            while (ci != NULL) {
-                walk_sh_list(ctx, ci->body);
-                ci = ci->next;
-            }
+    case CT_CASE: {
+        const case_item_t *ci = cmd->u.case_clause.items;
+        while (ci != NULL) {
+            walk_sh_list(ctx, ci->body);
+            ci = ci->next;
         }
         break;
+    }
     case CT_GROUP:
     case CT_SUBSHELL:
         walk_sh_list(ctx, cmd->u.group.body);
         break;
-    case CT_FUNCDEF:
+    case CT_FUNCDEF: {
+        bool was_in_function = ctx->in_function;
+        int saved_loop_depth = ctx->loop_depth;
+        ctx->in_function = true;
+        ctx->loop_depth = 0;
         walk_command(ctx, cmd->u.func_def.body, pl);
+        ctx->in_function = was_in_function;
+        ctx->loop_depth = saved_loop_depth;
         break;
+    }
     case CT_BRACKET:
-        /* Don't check quoting inside [[ ]] — it handles word splitting itself */
+        /* Don't check quoting inside [[ ]] */
         break;
     }
 }
@@ -223,8 +137,9 @@ static void walk_command(lint_ctx_t *ctx, const command_t *cmd, const and_or_t *
 lint_diag_t *lint_check(const sh_list_t *ast, const char *filename)
 {
     lint_ctx_t ctx;
-    ctx_init(&ctx, filename);
+    lint_ctx_init(&ctx, filename);
     walk_sh_list(&ctx, ast);
+    checks_variable_tracking(&ctx, ast);
     return ctx.diags;
 }
 
@@ -286,7 +201,6 @@ static void format_tty(strbuf_t *out, const lint_diag_t *diags, bool color)
     const lint_diag_t *d = diags;
     while (d != NULL) {
         if (color) {
-            /* bold filename, colored severity */
             strbuf_append_printf(out, "\033[1m%s:%u:%u:\033[0m ", d->filename, d->lineno,
                                  d->column);
             switch (d->severity) {
@@ -502,7 +416,6 @@ int lint_main(int argc, char *argv[])
         }
     }
 
-    /* No files: read from stdin */
     if (file_start < 0) {
         char *source = read_stdin();
         int rc = process_lint_file("<stdin>", source, fmt, min_sev);
