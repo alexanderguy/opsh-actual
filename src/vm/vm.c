@@ -707,9 +707,13 @@ int vm_run(vm_t *vm)
             break;
         }
 
+        case OP_NEGATE_STATUS:
+            vm->laststatus = (vm->laststatus == 0) ? 1 : 0;
+            break;
+
         case OP_REDIR_SAVE:
         case OP_REDIR_RESTORE:
-            /* Stubs for Phase 3c; no-ops until Phase 4f */
+            /* Stubs; no-ops until Phase 4f */
             break;
 
         case OP_HALT:
