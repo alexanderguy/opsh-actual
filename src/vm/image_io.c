@@ -6,8 +6,8 @@
 #include <string.h>
 
 /* Sanity limits for untrusted .opsb input */
-#define OPSB_MAX_SECTION_SIZE (64 * 1024 * 1024)   /* 64 MB */
-#define OPSB_MAX_STRING_SIZE (16 * 1024 * 1024)     /* 16 MB */
+#define OPSB_MAX_SECTION_SIZE (64 * 1024 * 1024) /* 64 MB */
+#define OPSB_MAX_STRING_SIZE (16 * 1024 * 1024)  /* 16 MB */
 #define OPSB_MAX_SECTIONS 256
 
 /* Write helpers (little-endian) */
