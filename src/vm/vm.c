@@ -16,6 +16,7 @@
 #include <glob.h>
 #include <inttypes.h>
 #include <pwd.h>
+#include <regex.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -641,7 +642,11 @@ int vm_run(vm_t *vm)
             /* ${#var} -- string length */
             if (flags & PE_STRLEN) {
                 variable_t *var = environ_get(vm->env, name);
-                if (var != NULL && var->value.type == VT_STRING) {
+                if (var != NULL && var->value.type == VT_ARRAY) {
+                    char buf[32];
+                    snprintf(buf, sizeof(buf), "%d", var->value.data.array.count);
+                    vm_push(vm, value_string(rcstr_new(buf)));
+                } else if (var != NULL && var->value.type == VT_STRING) {
                     size_t len = utf8_strlen(var->value.data.string);
                     char buf[32];
                     snprintf(buf, sizeof(buf), "%zu", len);
@@ -820,12 +825,43 @@ int vm_run(vm_t *vm)
                 }
 
                 bool replace_all = (flags & PE_GLOBAL) != 0;
+                bool anchor_head = (flags & PE_PREFIX) != 0;
+                bool anchor_tail = (flags & PE_SUFFIX) != 0;
                 size_t len = strlen(var_val);
                 strbuf_t result;
                 strbuf_init(&result);
                 size_t pos = 0;
 
+                /* For tail anchor, try matching suffix at each start position */
+                if (anchor_tail) {
+                    size_t best_start = len;
+                    size_t ti;
+                    for (ti = 0; ti <= len; ti++) {
+                        if (fnmatch(pat, var_val + ti, 0) == 0) {
+                            best_start = ti;
+                            break; /* first (longest) suffix match */
+                        }
+                    }
+                    if (best_start < len) {
+                        strbuf_append_bytes(&result, var_val, best_start);
+                        strbuf_append_str(&result, rep);
+                    } else {
+                        strbuf_append_str(&result, var_val);
+                    }
+                    free(var_val);
+                    free(pat);
+                    free(rep);
+                    vm_push(vm, value_string(strbuf_detach(&result)));
+                    break;
+                }
+
                 while (pos <= len) {
+                    /* Head anchor: only match at position 0 */
+                    if (anchor_head && pos != 0) {
+                        strbuf_append_str(&result, var_val + pos);
+                        break;
+                    }
+
                     /* At each position, find the longest match */
                     bool matched = false;
                     size_t match_end = pos;
@@ -1357,6 +1393,99 @@ int vm_run(vm_t *vm)
             break;
         }
 
+        case OP_GET_ARRAY: {
+            uint16_t name_idx = read_u16(vm);
+            const char *name = vm->image->const_pool[name_idx];
+            value_t idx_val = vm_pop(vm);
+            int idx = (int)value_to_integer(&idx_val);
+            value_destroy(&idx_val);
+            variable_t *var = environ_get(vm->env, name);
+            if (var != NULL && var->value.type == VT_ARRAY && idx >= 0 &&
+                idx < var->value.data.array.count) {
+                char *s = rcstr_retain(var->value.data.array.elements[idx]);
+                vm_push(vm, value_string(s));
+            } else {
+                vm_push(vm, value_string(rcstr_new("")));
+            }
+            break;
+        }
+
+        case OP_SET_ARRAY: {
+            uint16_t name_idx = read_u16(vm);
+            const char *name = vm->image->const_pool[name_idx];
+            value_t idx_val = vm_pop(vm);
+            value_t val = vm_pop(vm);
+            int idx = (int)value_to_integer(&idx_val);
+            value_destroy(&idx_val);
+            char *str = value_to_string(&val);
+            value_destroy(&val);
+
+            variable_t *var = environ_get(vm->env, name);
+            if (var != NULL && var->value.type == VT_ARRAY) {
+                /* Extend if needed */
+                if (idx >= var->value.data.array.count) {
+                    int new_count = idx + 1;
+                    var->value.data.array.elements = xrealloc(var->value.data.array.elements,
+                                                              (size_t)new_count * sizeof(char *));
+                    int ai;
+                    for (ai = var->value.data.array.count; ai < new_count; ai++) {
+                        var->value.data.array.elements[ai] = rcstr_new("");
+                    }
+                    var->value.data.array.count = new_count;
+                }
+                if (idx >= 0) {
+                    rcstr_release(var->value.data.array.elements[idx]);
+                    var->value.data.array.elements[idx] = str;
+                } else {
+                    rcstr_release(str);
+                }
+            } else {
+                /* Create new array */
+                int new_count = idx + 1;
+                if (new_count < 1) {
+                    new_count = 1;
+                }
+                char **elements = xcalloc((size_t)new_count, sizeof(char *));
+                int ai;
+                for (ai = 0; ai < new_count; ai++) {
+                    elements[ai] = rcstr_new("");
+                }
+                if (idx >= 0 && idx < new_count) {
+                    rcstr_release(elements[idx]);
+                    elements[idx] = str;
+                } else {
+                    rcstr_release(str);
+                }
+                value_t arr;
+                arr.type = VT_ARRAY;
+                arr.data.array.elements = elements;
+                arr.data.array.count = new_count;
+                environ_assign(vm->env, name, arr);
+            }
+            break;
+        }
+
+        case OP_SET_ARRAY_BULK: {
+            uint16_t name_idx = read_u16(vm);
+            uint16_t count = read_u16(vm);
+            const char *name = vm->image->const_pool[name_idx];
+
+            char **elements = xcalloc(count ? (size_t)count : 1, sizeof(char *));
+            int ai;
+            for (ai = (int)count - 1; ai >= 0; ai--) {
+                value_t v = vm_pop(vm);
+                elements[ai] = value_to_string(&v);
+                value_destroy(&v);
+            }
+
+            value_t arr;
+            arr.type = VT_ARRAY;
+            arr.data.array.elements = elements;
+            arr.data.array.count = (int)count;
+            environ_assign(vm->env, name, arr);
+            break;
+        }
+
         case OP_EXEC_BUILTIN: {
             uint16_t builtin_idx = read_u16(vm);
 
@@ -1855,6 +1984,52 @@ int vm_run(vm_t *vm)
                     } else {
                         result = (st1.st_dev == st2.st_dev && st1.st_ino == st2.st_ino) ? 0 : 1;
                     }
+                }
+                break;
+            }
+            case TEST_REGEX: {
+                regex_t re;
+                if (regcomp(&re, rhs, REG_EXTENDED) == 0) {
+                    size_t nmatch = re.re_nsub + 1;
+                    regmatch_t *matches = xcalloc(nmatch, sizeof(regmatch_t));
+                    if (regexec(&re, lhs, nmatch, matches, 0) == 0) {
+                        result = 0;
+                        /* Populate BASH_REMATCH array */
+                        int count = 0;
+                        size_t mi;
+                        for (mi = 0; mi < nmatch; mi++) {
+                            if (matches[mi].rm_so >= 0) {
+                                count = (int)mi + 1;
+                            }
+                        }
+                        char **elements = xcalloc(count ? (size_t)count : 1, sizeof(char *));
+                        for (mi = 0; mi < (size_t)count; mi++) {
+                            if (matches[mi].rm_so >= 0) {
+                                size_t mlen = (size_t)(matches[mi].rm_eo - matches[mi].rm_so);
+                                elements[mi] = rcstr_from_buf(lhs + matches[mi].rm_so, mlen);
+                            } else {
+                                elements[mi] = rcstr_new("");
+                            }
+                        }
+                        value_t arr;
+                        arr.type = VT_ARRAY;
+                        arr.data.array.elements = elements;
+                        arr.data.array.count = count;
+                        environ_assign(vm->env, "BASH_REMATCH", arr);
+                    } else {
+                        result = 1;
+                        /* Clear BASH_REMATCH on non-match */
+                        value_t empty_arr;
+                        empty_arr.type = VT_ARRAY;
+                        empty_arr.data.array.elements = NULL;
+                        empty_arr.data.array.count = 0;
+                        environ_assign(vm->env, "BASH_REMATCH", empty_arr);
+                    }
+                    free(matches);
+                    regfree(&re);
+                } else {
+                    fprintf(stderr, "opsh: invalid regex: %s\n", rhs);
+                    result = 2;
                 }
                 break;
             }

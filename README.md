@@ -12,7 +12,7 @@ opsh compiles `.opsh` scripts to bytecode and executes them on a stack-based vir
 - Full word expansion: `$var`, `${var:-default}`, `${var#pat}`, `${var%pat}`, `${var/pat/rep}`, `${#var}`, `$(cmd)`, tilde expansion (`~`, `~/path`, `~user`)
 - Arithmetic: `$((expr))` with 14-level operator precedence, variables, assignment, ternary, short-circuit, pre/post increment
 - Control flow: `if`/`elif`/`else`, `for` (with and without `in` list), `while`/`until`, `case`, brace groups, subshells
-- `[[ ]]` expressions with file tests, string/numeric comparisons, glob matching, `&&`, `||`, `!`, `!=`
+- `[[ ]]` expressions with file tests, string/numeric comparisons, glob matching, `=~` regex, `&&`, `||`, `!`, `!=`
 - Functions with positional parameters, `"$@"` with word boundary preservation, `shift`
 - Pipelines (`cmd1 | cmd2 | cmd3`) and and-or lists (`&&`, `||`, `!`)
 - I/O redirections (`<`, `>`, `>>`, `>|`, `<>`, `<&`, `>&`, `<<`, `<<-`, `<<<`)
@@ -33,10 +33,7 @@ opsh compiles `.opsh` scripts to bytecode and executes them on a stack-based vir
 
 **Known limitations:**
 
-- `set -e` suppresses the entire `&&`/`||` chain (POSIX says only non-last commands)
 - Functions defined in nested eval reference stale bytecode offsets
-- `=~` regex matching in `[[ ]]` not implemented
-- Formatter heredoc roundtrip loses backslash escapes in expanding bodies
 - Capability system and native module API not yet implemented
 
 ## Usage
