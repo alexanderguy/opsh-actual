@@ -86,6 +86,7 @@ typedef struct {
     unsigned int lineno;     /* current line number */
     const char *filename;    /* source filename (borrowed) */
     bool recognize_reserved; /* true when reserved words are valid */
+    bool regex_mode;         /* true when parsing =~ RHS: ( ) | are word chars */
     token_t lookahead;       /* one-token lookahead */
     bool has_lookahead;
     int error_count;
@@ -118,7 +119,6 @@ const char *token_type_name(token_type_t type);
 /* Parse a here-document body string for parameter/command expansion.
  * Returns a word chain with WP_LITERAL, WP_PARAM, WP_CMDSUB nodes.
  * Caller owns the result. */
-word_part_t *lexer_parse_heredoc_body(const char *body, const char *filename,
-                                     arena_t *arena);
+word_part_t *lexer_parse_heredoc_body(const char *body, const char *filename, arena_t *arena);
 
 #endif /* OPSH_PARSER_LEXER_H */
