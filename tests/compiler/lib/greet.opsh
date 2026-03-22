@@ -1,0 +1,7 @@
+greet::hello() {
+    echo "hello from greet module"
+}
+
+greet::name() {
+    echo "hello $1"
+}

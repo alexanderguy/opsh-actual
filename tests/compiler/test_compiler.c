@@ -15,10 +15,10 @@
  * Helper: compile source, run it, capture stdout, return the output.
  * Caller must free the returned string. Returns NULL on compile error.
  */
-static char *compile_and_run(const char *source, int *status_out)
+static char *compile_and_run_from(const char *source, const char *filename, int *status_out)
 {
     parser_t p;
-    parser_init(&p, source, "test");
+    parser_init(&p, source, filename);
     sh_list_t *ast = parser_parse(&p);
 
     if (parser_error_count(&p) > 0) {
@@ -27,7 +27,7 @@ static char *compile_and_run(const char *source, int *status_out)
         return NULL;
     }
 
-    bytecode_image_t *img = compile(ast, "test");
+    bytecode_image_t *img = compile(ast, filename);
     sh_list_free(ast);
     parser_destroy(&p);
 
@@ -71,6 +71,11 @@ static char *compile_and_run(const char *source, int *status_out)
     image_free(img);
 
     return strbuf_detach(&captured);
+}
+
+static char *compile_and_run(const char *source, int *status_out)
+{
+    return compile_and_run_from(source, "test", status_out);
 }
 
 static void test_echo_hello_world(void)
@@ -618,11 +623,18 @@ static void test_builtin_cd_pwd(void)
 {
     int status;
     char *out;
+    char saved_cwd[4096];
+
+    /* Save CWD so the cd test doesn't break subsequent tests */
+    getcwd(saved_cwd, sizeof(saved_cwd));
 
     /* cd to a known directory and verify pwd output ends with newline */
     out = compile_and_run("cd /; pwd", &status);
     tap_is_str(out, "/\n", "cd/pwd: changes and shows directory");
     free(out);
+
+    /* Restore CWD */
+    chdir(saved_cwd);
 }
 
 static void test_builtin_export_unset(void)
@@ -825,9 +837,35 @@ static void test_trap_builtin(void)
     free(out);
 }
 
+static void test_module_import(void)
+{
+    int status;
+    char *out;
+
+    /* Import a module and call its function.
+     * The test binary runs from the project root, so use a path
+     * relative to tests/compiler/ which has lib/greet.opsh */
+    out = compile_and_run_from("lib::import greet\ngreet::hello", "tests/compiler/script.opsh",
+                               &status);
+    tap_is_str(out, "hello from greet module\n", "module: import and call");
+    free(out);
+
+    /* Call with arguments */
+    out = compile_and_run_from("lib::import greet\ngreet::name world", "tests/compiler/script.opsh",
+                               &status);
+    tap_is_str(out, "hello world\n", "module: call with arguments");
+    free(out);
+
+    /* Duplicate import is idempotent */
+    out = compile_and_run_from("lib::import greet\nlib::import greet\ngreet::hello",
+                               "tests/compiler/script.opsh", &status);
+    tap_is_str(out, "hello from greet module\n", "module: duplicate import is no-op");
+    free(out);
+}
+
 int main(void)
 {
-    tap_plan(102);
+    tap_plan(105);
 
     test_echo_hello_world();
     test_echo_single_word();
@@ -886,6 +924,7 @@ int main(void)
     test_glob();
     test_exit_trap();
     test_trap_builtin();
+    test_module_import();
 
     return tap_done();
 }

@@ -50,6 +50,13 @@ void image_free(bytecode_image_t *img)
         }
         free(img->funcs);
     }
+    {
+        int mi;
+        for (mi = 0; mi < img->module_count; mi++) {
+            free((void *)img->modules[mi].name);
+        }
+        free(img->modules);
+    }
     free(img);
 }
 
@@ -143,6 +150,7 @@ void vm_init(vm_t *vm, bytecode_image_t *image)
     vm->loop_depth = 0;
     vm->func_table = image ? image->funcs : NULL;
     vm->func_count = image ? image->func_count : 0;
+    ht_init(&vm->modules_loaded);
     vm->env = environ_new(NULL, false);
     vm->laststatus = 0;
     vm->halted = false;
@@ -173,6 +181,7 @@ void vm_destroy(vm_t *vm)
 
     vm->func_table = NULL;
     vm->func_count = 0;
+    ht_destroy(&vm->modules_loaded);
 
     free(vm->captured_stdout);
     vm->captured_stdout = NULL;
@@ -1697,6 +1706,48 @@ int vm_run(vm_t *vm)
 
             dup2(tmpfd, fd);
             close(tmpfd);
+            break;
+        }
+
+        case OP_IMPORT: {
+            uint16_t name_idx = read_u16(vm);
+            const char *module_name = vm->image->const_pool[name_idx];
+
+            /* Check if already initialized */
+            if (ht_get(&vm->modules_loaded, module_name) != NULL) {
+                break; /* skip -- already loaded */
+            }
+
+            /* Find the module's init offset and run init in a fresh VM */
+            {
+                int mi;
+                bool found = false;
+                for (mi = 0; mi < vm->image->module_count; mi++) {
+                    if (strcmp(vm->image->modules[mi].name, module_name) == 0) {
+                        ht_set(&vm->modules_loaded, module_name, (void *)1);
+
+                        /* Run module init in a fresh VM to avoid state corruption.
+                         * The init VM shares the environment so module-level
+                         * variable assignments are visible to the caller. */
+                        vm_t init_vm;
+                        vm_init(&init_vm, vm->image);
+                        /* Share the environment */
+                        environ_destroy(init_vm.env);
+                        init_vm.env = vm->env;
+                        init_vm.ip = vm->image->modules[mi].init_offset;
+                        vm_run(&init_vm);
+                        init_vm.env = NULL; /* don't double-free */
+                        vm_destroy(&init_vm);
+
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    fprintf(stderr, "opsh: module '%s' not found in image\n", module_name);
+                    vm->laststatus = 1;
+                }
+            }
             break;
         }
 
