@@ -35,6 +35,8 @@ make test-foundation   # strbuf, plist, hashtable, util
 make test-parser       # lexer + parser
 make test-vm           # VM, variables, value types
 make test-compiler     # end-to-end compiler tests (the bulk)
+make test-format       # formatter tests
+make test-lint         # linter tests
 ```
 
 Tests use a header-only TAP harness (`tests/tap.h`). Each test binary is a standalone C program that outputs TAP. The Makefile runs them and checks for failures.
@@ -105,10 +107,13 @@ Module resolution order: `script_dir/lib/name.opsh`, then `$OPSH_LOADPATH` entri
 | `src/vm/` | VM dispatch loop, value types, disassembler, .opsb I/O |
 | `src/exec/` | Variable scope chain, signal handling |
 | `src/builtins/` | Builtin command registry and implementations |
+| `src/format/` | AST-based script formatter (`opsh format`) |
+| `src/lint/` | Static analysis: walker (`lint.c`), checks (`checks.c`) |
 | `src/agent/` | JSON-RPC event sink for agent consumption |
-| `src/lsp/` | LSP server (diagnostics, completion) |
+| `src/lsp/` | LSP server (diagnostics, completion, lint integration) |
 | `include/opsh/` | Public API headers |
 | `tests/` | TAP test harness and all test suites |
+| `fuzz/` | libfuzzer harnesses and seed corpora |
 
 ## Debugging
 
