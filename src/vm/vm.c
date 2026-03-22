@@ -987,8 +987,23 @@ int vm_run(vm_t *vm)
             }
 
             if (builtin_idx < (uint16_t)builtin_count() && builtin_table[builtin_idx].fn != NULL) {
+                int64_t cmd_id = vm->next_command_id++;
+                {
+                    event_t ev = {0};
+                    ev.type = EVENT_COMMAND_START;
+                    ev.id = cmd_id;
+                    ev.name = builtin_table[builtin_idx].name;
+                    event_emit(vm->event_sink, &ev);
+                }
                 int status = builtin_table[builtin_idx].fn(vm, argc, argv);
                 vm->laststatus = status;
+                {
+                    event_t ev = {0};
+                    ev.type = EVENT_COMMAND_END;
+                    ev.id = cmd_id;
+                    ev.status = status;
+                    event_emit(vm->event_sink, &ev);
+                }
                 /* Special cases */
                 if (strcmp(builtin_table[builtin_idx].name, "exit") == 0) {
                     vm_exit(vm, status);
@@ -1038,13 +1053,26 @@ int vm_run(vm_t *vm)
                 argv[i] = vm_pop(vm);
             }
 
+            /* Emit commandStart event */
+            int64_t exec_cmd_id = vm->next_command_id++;
+            char *exec_cmd_name = (argc > 0) ? value_to_string(&argv[0]) : NULL;
+            bool exec_is_func = false; /* suppress commandEnd for async func dispatch */
+            {
+                event_t ev = {0};
+                ev.type = EVENT_COMMAND_START;
+                ev.id = exec_cmd_id;
+                ev.name = exec_cmd_name;
+                event_emit(vm->event_sink, &ev);
+            }
+
             /* Try runtime function lookup first */
             if (argc > 0) {
-                char *cmd_name = value_to_string(&argv[0]);
+                char *cmd_name = exec_cmd_name;
                 int fi;
                 for (fi = 0; fi < vm->func_count; fi++) {
                     if (strcmp(vm->func_table[fi].name, cmd_name) == 0) {
                         rcstr_release(cmd_name);
+                        exec_cmd_name = NULL;
 
                         /* Push call frame */
                         if (vm->call_depth >= VM_CALL_STACK_MAX) {
@@ -1083,6 +1111,7 @@ int vm_run(vm_t *vm)
                         free(argv);
 
                         vm->ip = vm->func_table[fi].bytecode_offset;
+                        exec_is_func = true;
                         goto exec_simple_done;
                     }
                 }
@@ -1091,6 +1120,7 @@ int vm_run(vm_t *vm)
                 int bi = builtin_lookup(cmd_name);
                 if (bi >= 0) {
                     rcstr_release(cmd_name);
+                    exec_cmd_name = NULL;
                     int status = builtin_table[bi].fn(vm, argc, argv);
                     vm->laststatus = status;
                     if (strcmp(builtin_table[bi].name, "exit") == 0) {
@@ -1105,6 +1135,7 @@ int vm_run(vm_t *vm)
 
                 fprintf(stderr, "opsh: %s: command not found\n", cmd_name);
                 rcstr_release(cmd_name);
+                exec_cmd_name = NULL;
             }
 
             vm->laststatus = 127;
@@ -1113,6 +1144,14 @@ int vm_run(vm_t *vm)
             }
             free(argv);
         exec_simple_done:
+            if (!exec_is_func) {
+                event_t ev = {0};
+                ev.type = EVENT_COMMAND_END;
+                ev.id = exec_cmd_id;
+                ev.status = vm->laststatus;
+                event_emit(vm->event_sink, &ev);
+            }
+            free(exec_cmd_name);
             break;
         }
 
@@ -1309,6 +1348,7 @@ int vm_run(vm_t *vm)
                 signal_reset();
                 free(vm->exit_trap);
                 vm->exit_trap = NULL;
+                vm->event_sink = NULL; /* children don't emit events */
                 close(pipefd[0]);
                 dup2(pipefd[1], STDOUT_FILENO);
                 close(pipefd[1]);
@@ -1439,6 +1479,7 @@ int vm_run(vm_t *vm)
                     signal_reset();
                     free(vm->exit_trap);
                     vm->exit_trap = NULL;
+                    vm->event_sink = NULL; /* children don't emit events */
                     if (prev_read_fd >= 0) {
                         dup2(prev_read_fd, STDIN_FILENO);
                         close(prev_read_fd);
