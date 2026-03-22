@@ -9,8 +9,7 @@
 static variable_t *variable_new(const char *name, value_t value, unsigned int flags)
 {
     variable_t *var = xcalloc(1, sizeof(*var));
-    var->name = xmalloc(strlen(name) + 1);
-    strcpy(var->name, name);
+    var->name = xstrdup(name);
     var->value = value;
     var->flags = flags;
     var->dirty = false;

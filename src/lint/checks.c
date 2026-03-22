@@ -37,8 +37,7 @@ void lint_emit(lint_ctx_t *ctx, int code, lint_severity_t sev, unsigned int line
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    d->message = xmalloc(strlen(buf) + 1);
-    strcpy(d->message, buf);
+    d->message = xstrdup(buf);
 
     d->next = NULL;
     *ctx->tail = d;
@@ -194,8 +193,7 @@ void checks_on_simple_command(lint_ctx_t *ctx, const command_t *cmd, const and_o
 
     /* SC2002: useless cat — cat file | cmd */
     if (name != NULL && strcmp(name, "cat") == 0 && argc == 2 && cmd->next != NULL) {
-        lint_emit(ctx, 2002, LINT_STYLE, cmd->lineno,
-                  "Useless cat. Consider 'cmd < file' instead");
+        lint_emit(ctx, 2002, LINT_STYLE, cmd->lineno, "Useless cat. Consider 'cmd < file' instead");
     }
 
     /* SC2008: piping to echo */
@@ -459,8 +457,7 @@ static void track_vars_word(const word_part_t *w, hashtable_t *refs)
                 }
             }
             if (ht_get(refs, name) == NULL) {
-                char *key = xmalloc(strlen(name) + 1);
-                strcpy(key, name);
+                char *key = xstrdup(name);
                 ht_set(refs, key, (void *)1);
             }
         }
@@ -474,10 +471,10 @@ static void track_vars_word(const word_part_t *w, hashtable_t *refs)
 static void track_vars_command(const command_t *cmd, hashtable_t *assigns, hashtable_t *refs,
                                hashtable_t *funcs_defined);
 static void track_vars_sh_list(const sh_list_t *ao, hashtable_t *assigns, hashtable_t *refs,
-                              hashtable_t *funcs_defined);
+                               hashtable_t *funcs_defined);
 
 static void track_vars_sh_list(const sh_list_t *ao, hashtable_t *assigns, hashtable_t *refs,
-                              hashtable_t *funcs_defined)
+                               hashtable_t *funcs_defined)
 {
     while (ao != NULL) {
         const and_or_t *pl = ao->pipelines;
@@ -523,8 +520,7 @@ static void track_read_assigns(const command_t *cmd, hashtable_t *assigns)
         }
         /* This is a variable name that read assigns to */
         if (ht_get(assigns, arg) == NULL) {
-            char *key = xmalloc(strlen(arg) + 1);
-            strcpy(key, arg);
+            char *key = xstrdup(arg);
             ht_set(assigns, key, (void *)1);
         }
     }
@@ -617,8 +613,7 @@ static void track_vars_command(const command_t *cmd, hashtable_t *assigns, hasht
         if (cmd->u.for_clause.varname != NULL) {
             const char *name = cmd->u.for_clause.varname;
             if (ht_get(assigns, name) == NULL) {
-                char *key = xmalloc(strlen(name) + 1);
-                strcpy(key, name);
+                char *key = xstrdup(name);
                 ht_set(assigns, key, (void *)1);
             }
         }
@@ -650,8 +645,7 @@ static void track_vars_command(const command_t *cmd, hashtable_t *assigns, hasht
         if (funcs_defined != NULL && cmd->u.func_def.name != NULL) {
             const char *fname = cmd->u.func_def.name;
             if (ht_get(funcs_defined, fname) == NULL) {
-                char *key = xmalloc(strlen(fname) + 1);
-                strcpy(key, fname);
+                char *key = xstrdup(fname);
                 ht_set(funcs_defined, key, (void *)1);
             }
         }
@@ -683,8 +677,7 @@ static void collect_func_calls_cmd(const command_t *cmd, const hashtable_t *func
         const char *name = simple_cmd_name(cmd);
         if (name != NULL && ht_get(funcs_defined, name) != NULL) {
             if (ht_get(funcs_called, name) == NULL) {
-                char *key = xmalloc(strlen(name) + 1);
-                strcpy(key, name);
+                char *key = xstrdup(name);
                 ht_set(funcs_called, key, (void *)1);
             }
         }

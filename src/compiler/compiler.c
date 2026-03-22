@@ -62,19 +62,6 @@ static size_t emit_jump(compiler_t *cc, opcode_t op)
 }
 
 /*
- * Backpatch a jump instruction to target the current code position.
- */
-static void patch_jump(compiler_t *cc, size_t patch_pos)
-{
-    size_t target = cc->image->code_size;
-    int32_t offset = (int32_t)((int64_t)target - (int64_t)(patch_pos + 4));
-    cc->image->code[patch_pos] = (uint8_t)(offset & 0xFF);
-    cc->image->code[patch_pos + 1] = (uint8_t)((offset >> 8) & 0xFF);
-    cc->image->code[patch_pos + 2] = (uint8_t)((offset >> 16) & 0xFF);
-    cc->image->code[patch_pos + 3] = (uint8_t)((offset >> 24) & 0xFF);
-}
-
-/*
  * Patch a jump to target a specific bytecode offset.
  */
 static void patch_jump_to(compiler_t *cc, size_t patch_pos, size_t target)
@@ -84,6 +71,12 @@ static void patch_jump_to(compiler_t *cc, size_t patch_pos, size_t target)
     cc->image->code[patch_pos + 1] = (uint8_t)((offset >> 8) & 0xFF);
     cc->image->code[patch_pos + 2] = (uint8_t)((offset >> 16) & 0xFF);
     cc->image->code[patch_pos + 3] = (uint8_t)((offset >> 24) & 0xFF);
+}
+
+/* Backpatch a jump instruction to target the current code position. */
+static void patch_jump(compiler_t *cc, size_t patch_pos)
+{
+    patch_jump_to(cc, patch_pos, cc->image->code_size);
 }
 
 /* Loop stack management */
@@ -379,8 +372,7 @@ static char *resolve_module(compiler_t *cc, const char *name)
     /* Try script_dir/lib/name.opsh */
     snprintf(path, sizeof(path), "%s/lib/%s.opsh", cc->script_dir, name);
     if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
-        char *result = xmalloc(strlen(path) + 1);
-        strcpy(result, path);
+        char *result = xstrdup(path);
         return result;
     }
 
@@ -394,8 +386,7 @@ static char *resolve_module(compiler_t *cc, const char *name)
             if (dir_len > 0) {
                 snprintf(path, sizeof(path), "%.*s/%s.opsh", (int)dir_len, p, name);
                 if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
-                    char *result = xmalloc(strlen(path) + 1);
-                    strcpy(result, path);
+                    char *result = xstrdup(path);
                     return result;
                 }
             }
@@ -408,33 +399,6 @@ static char *resolve_module(compiler_t *cc, const char *name)
     }
 
     return NULL;
-}
-
-/*
- * Read a file into a malloc'd string. Returns NULL on failure.
- */
-static char *read_file_contents(const char *path)
-{
-    FILE *f = fopen(path, "r");
-    if (f == NULL) {
-        return NULL;
-    }
-    fseek(f, 0, SEEK_END);
-    long len = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (len < 0) {
-        fclose(f);
-        return NULL;
-    }
-    char *buf = xmalloc((size_t)len + 1);
-    if (len > 0) {
-        size_t nread = fread(buf, 1, (size_t)len, f);
-        buf[nread] = '\0';
-    } else {
-        buf[0] = '\0';
-    }
-    fclose(f);
-    return buf;
 }
 
 /*
@@ -991,8 +955,7 @@ static void compile_funcdef(compiler_t *cc, command_t *cmd)
         return;
     }
 
-    cc->func_table[cc->func_count].name = xmalloc(strlen(name) + 1);
-    strcpy(cc->func_table[cc->func_count].name, name);
+    cc->func_table[cc->func_count].name = xstrdup(name);
     cc->func_table[cc->func_count].bytecode_offset = func_offset;
     cc->func_count++;
 
@@ -1192,7 +1155,7 @@ static void compile_import(compiler_t *cc, const char *module_name, unsigned int
     }
 
     /* Read module source */
-    char *source = read_file_contents(path);
+    char *source = read_file(path);
     if (source == NULL) {
         char buf[256];
         snprintf(buf, sizeof(buf), "cannot read module '%s'", module_name);
@@ -1202,8 +1165,7 @@ static void compile_import(compiler_t *cc, const char *module_name, unsigned int
     }
 
     /* Push onto import stack (for circular dep detection during parse) */
-    cc->import_stack[cc->import_depth] = xmalloc(strlen(module_name) + 1);
-    strcpy(cc->import_stack[cc->import_depth], module_name);
+    cc->import_stack[cc->import_depth] = xstrdup(module_name);
     cc->import_depth++;
 
     /* Parse the module */
@@ -1226,8 +1188,7 @@ static void compile_import(compiler_t *cc, const char *module_name, unsigned int
 
     /* Mark as imported now (after successful parse) */
     {
-        char *key = xmalloc(strlen(module_name) + 1);
-        strcpy(key, module_name);
+        char *key = xstrdup(module_name);
         ht_set(&cc->imported, key, (void *)1);
     }
 
@@ -1250,8 +1211,7 @@ static void compile_import(compiler_t *cc, const char *module_name, unsigned int
 
     /* Record the module */
     if (cc->module_count < MAX_IMPORT_DEPTH * 4) {
-        cc->modules[cc->module_count].name = xmalloc(strlen(module_name) + 1);
-        strcpy(cc->modules[cc->module_count].name, module_name);
+        cc->modules[cc->module_count].name = xstrdup(module_name);
         cc->modules[cc->module_count].init_offset = init_offset;
         cc->module_count++;
     }

@@ -12,8 +12,7 @@ static void parser_error(parser_t *p, const char *msg)
     if (p->error_count < MAX_PARSE_ERRORS) {
         parse_error_t *e = &p->errors[p->error_count];
         e->lineno = p->lexer.lineno;
-        e->message = xmalloc(strlen(msg) + 1);
-        strcpy(e->message, msg);
+        e->message = xstrdup(msg);
     }
     p->error_count++;
 }
@@ -771,8 +770,7 @@ static command_t *parse_case(parser_t *p)
                 /* Create a wordunit for the reserved word text */
                 word_part_t *wu = arena_calloc(&p->arena, sizeof(*wu));
                 wu->type = WP_LITERAL;
-                wu->part.string = xmalloc(strlen(tok.value) + 1);
-                strcpy(wu->part.string, tok.value);
+                wu->part.string = xstrdup(tok.value);
                 plist_add(&ci->patterns, wu);
             }
             free(tok.value);

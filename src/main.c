@@ -20,26 +20,6 @@
 #include <mach-o/dyld.h>
 #endif
 
-static char *read_file(const char *path)
-{
-    FILE *f = fopen(path, "r");
-    if (f == NULL) {
-        return NULL;
-    }
-    fseek(f, 0, SEEK_END);
-    long len = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (len < 0) {
-        fclose(f);
-        return NULL;
-    }
-    char *buf = xmalloc((size_t)len + 1);
-    size_t nread = fread(buf, 1, (size_t)len, f);
-    buf[nread] = '\0';
-    fclose(f);
-    return buf;
-}
-
 /*
  * Appended payload trailer (8 bytes at end of executable):
  *   4 bytes: payload offset from start of file (u32 LE)
