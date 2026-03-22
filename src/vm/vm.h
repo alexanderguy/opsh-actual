@@ -110,7 +110,15 @@ typedef struct vm {
 
     bool halted;
     bool return_requested; /* set by `return` builtin to trigger OP_RET */
+
+    /* Trap handlers: command strings indexed by signal number.
+     * NULL means default behavior, "" means ignore. */
+    char *trap_handlers[32];
+    char *exit_trap; /* EXIT trap handler (separate from signal traps) */
 } vm_t;
+
+/* Graceful exit: runs EXIT trap, then sets halted */
+void vm_exit(vm_t *vm, int status);
 
 /* Register a function in the VM (used by the compiler) */
 void vm_register_func(vm_t *vm, const char *name, size_t offset);

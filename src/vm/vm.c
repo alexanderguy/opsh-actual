@@ -1,11 +1,15 @@
 #include "vm/vm.h"
 
 #include "builtins/builtins.h"
+#include "compiler/compiler.h"
+#include "exec/signal.h"
 #include "foundation/rcstr.h"
 #include "foundation/strbuf.h"
 #include "foundation/util.h"
 #include "parser/ast.h"
+#include "parser/parser.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <glob.h>
 #include <stdio.h>
@@ -172,6 +176,54 @@ void vm_destroy(vm_t *vm)
 
     free(vm->captured_stdout);
     vm->captured_stdout = NULL;
+
+    /* Free trap handlers */
+    {
+        int ti;
+        for (ti = 0; ti < 32; ti++) {
+            free(vm->trap_handlers[ti]);
+            vm->trap_handlers[ti] = NULL;
+        }
+        free(vm->exit_trap);
+        vm->exit_trap = NULL;
+    }
+}
+
+void vm_exit(vm_t *vm, int status)
+{
+    vm->laststatus = status;
+
+    /* Run EXIT trap if set. Clear it first to prevent recursion
+     * if the trap body calls exit. */
+    if (vm->exit_trap != NULL && vm->exit_trap[0] != '\0') {
+        char *trap_cmd = vm->exit_trap;
+        vm->exit_trap = NULL; /* prevent re-entry */
+
+        parser_t p;
+        parser_init(&p, trap_cmd, "EXIT trap");
+        sh_list_t *ast = parser_parse(&p);
+        if (ast != NULL && parser_error_count(&p) == 0) {
+            bytecode_image_t *trap_img = compile(ast, "EXIT trap");
+            if (trap_img != NULL) {
+                /* Run the trap in a fresh VM to avoid state corruption */
+                vm_t trap_vm;
+                vm_init(&trap_vm, trap_img);
+                /* Inherit the current environment */
+                environ_destroy(trap_vm.env);
+                trap_vm.env = vm->env;
+                vm_run(&trap_vm);
+                trap_vm.env = NULL; /* don't double-free */
+                vm_destroy(&trap_vm);
+                image_free(trap_img);
+            }
+        }
+        sh_list_free(ast);
+        parser_destroy(&p);
+        free(trap_cmd);
+    }
+
+    vm->laststatus = status;
+    vm->halted = true;
 }
 
 void vm_push(vm_t *vm, value_t val)
@@ -246,6 +298,44 @@ static void vm_jump(vm_t *vm, int32_t offset)
 int vm_run(vm_t *vm)
 {
     while (!vm->halted && vm->ip < vm->image->code_size) {
+        /* Safe point: check for pending signals */
+        if (signal_pending()) {
+            int sig = signal_get_pending();
+            signal_clear();
+            if (sig > 0 && sig < 32 && vm->trap_handlers[sig] != NULL) {
+                /* Execute the trap handler */
+                char *handler = vm->trap_handlers[sig];
+                if (handler[0] != '\0') {
+                    /* Non-empty handler: parse and execute */
+                    parser_t trap_p;
+                    parser_init(&trap_p, handler, "trap");
+                    sh_list_t *trap_ast = parser_parse(&trap_p);
+                    if (trap_ast != NULL && parser_error_count(&trap_p) == 0) {
+                        bytecode_image_t *trap_img = compile(trap_ast, "trap");
+                        if (trap_img != NULL) {
+                            vm_t trap_vm;
+                            vm_init(&trap_vm, trap_img);
+                            environ_destroy(trap_vm.env);
+                            trap_vm.env = vm->env;
+                            vm_run(&trap_vm);
+                            vm->laststatus = trap_vm.laststatus;
+                            trap_vm.env = NULL;
+                            vm_destroy(&trap_vm);
+                            image_free(trap_img);
+                        }
+                    }
+                    sh_list_free(trap_ast);
+                    parser_destroy(&trap_p);
+                }
+                /* Empty handler ("") means ignore the signal */
+            } else if (sig == SIGINT || sig == SIGTERM) {
+                /* Default behavior: halt */
+                vm->laststatus = 128 + sig;
+                vm->halted = true;
+                break;
+            }
+        }
+
         uint8_t op = read_u8(vm);
 
         switch ((opcode_t)op) {
@@ -892,7 +982,7 @@ int vm_run(vm_t *vm)
                 vm->laststatus = status;
                 /* Special cases */
                 if (strcmp(builtin_table[builtin_idx].name, "exit") == 0) {
-                    vm->halted = true;
+                    vm_exit(vm, status);
                 }
                 /* return builtin triggers function return */
                 if (vm->return_requested) {
@@ -995,7 +1085,7 @@ int vm_run(vm_t *vm)
                     int status = builtin_table[bi].fn(vm, argc, argv);
                     vm->laststatus = status;
                     if (strcmp(builtin_table[bi].name, "exit") == 0) {
-                        vm->halted = true;
+                        vm_exit(vm, status);
                     }
                     for (i = 0; i < argc; i++) {
                         value_destroy(&argv[i]);
@@ -1206,12 +1296,14 @@ int vm_run(vm_t *vm)
             }
 
             if (pid == 0) {
-                /* Child: redirect stdout to pipe write end */
+                /* Child: restore signal defaults, clear traps */
+                signal_reset();
+                free(vm->exit_trap);
+                vm->exit_trap = NULL;
                 close(pipefd[0]);
                 dup2(pipefd[1], STDOUT_FILENO);
                 close(pipefd[1]);
 
-                /* Execute the sub-segment */
                 vm->ip = (size_t)sub_offset;
                 vm->halted = false;
                 vm->captured_stdout = NULL;
@@ -1229,14 +1321,25 @@ int vm_run(vm_t *vm)
             {
                 char buf[4096];
                 ssize_t n;
-                while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
-                    strbuf_append_bytes(&captured, buf, (size_t)n);
+                for (;;) {
+                    n = read(pipefd[0], buf, sizeof(buf));
+                    if (n > 0) {
+                        strbuf_append_bytes(&captured, buf, (size_t)n);
+                    } else if (n == 0) {
+                        break;
+                    } else if (errno == EINTR) {
+                        continue;
+                    } else {
+                        break;
+                    }
                 }
             }
             close(pipefd[0]);
 
             int wstatus;
-            waitpid(pid, &wstatus, 0);
+            while (waitpid(pid, &wstatus, 0) < 0 && errno == EINTR) {
+                /* retry */
+            }
             if (WIFEXITED(wstatus)) {
                 vm->laststatus = WEXITSTATUS(wstatus);
             } else {
@@ -1323,7 +1426,10 @@ int vm_run(vm_t *vm)
                 }
 
                 if (pid == 0) {
-                    /* Child */
+                    /* Child: restore signal defaults, clear traps */
+                    signal_reset();
+                    free(vm->exit_trap);
+                    vm->exit_trap = NULL;
                     if (prev_read_fd >= 0) {
                         dup2(prev_read_fd, STDIN_FILENO);
                         close(prev_read_fd);
@@ -1369,7 +1475,9 @@ int vm_run(vm_t *vm)
                 for (wi = 0; wi < (int)cmd_count; wi++) {
                     if (pids[wi] > 0) {
                         int wstatus;
-                        waitpid(pids[wi], &wstatus, 0);
+                        while (waitpid(pids[wi], &wstatus, 0) < 0 && errno == EINTR) {
+                            /* retry */
+                        }
                         if (WIFEXITED(wstatus)) {
                             last_status = WEXITSTATUS(wstatus);
                         } else {
@@ -1564,10 +1672,13 @@ int vm_run(vm_t *vm)
                 size_t written = 0;
                 while (written < len) {
                     ssize_t n = write(tmpfd, content + written, len - written);
-                    if (n <= 0) {
+                    if (n > 0) {
+                        written += (size_t)n;
+                    } else if (n < 0 && errno == EINTR) {
+                        continue;
+                    } else {
                         break;
                     }
-                    written += (size_t)n;
                 }
             }
             lseek(tmpfd, 0, SEEK_SET);
@@ -1590,7 +1701,7 @@ int vm_run(vm_t *vm)
         }
 
         case OP_HALT:
-            vm->halted = true;
+            vm_exit(vm, vm->laststatus);
             break;
 
         default:

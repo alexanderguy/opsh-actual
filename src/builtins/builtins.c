@@ -8,6 +8,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,10 +20,13 @@ static void write_fd1(const char *data, size_t len)
     size_t written = 0;
     while (written < len) {
         ssize_t n = write(STDOUT_FILENO, data + written, len - written);
-        if (n <= 0) {
+        if (n > 0) {
+            written += (size_t)n;
+        } else if (n < 0 && errno == EINTR) {
+            continue;
+        } else {
             break;
         }
-        written += (size_t)n;
     }
 }
 
@@ -496,13 +500,25 @@ static int builtin_read(vm_t *vm, int argc, value_t *argv)
     {
         char c;
         ssize_t n;
-        while ((n = read(STDIN_FILENO, &c, 1)) == 1) {
-            if (c == '\n') {
+        bool got_eof = false;
+        for (;;) {
+            n = read(STDIN_FILENO, &c, 1);
+            if (n == 1) {
+                if (c == '\n') {
+                    break;
+                }
+                strbuf_append_byte(&line, c);
+            } else if (n == 0) {
+                got_eof = true;
+                break;
+            } else if (errno == EINTR) {
+                continue;
+            } else {
+                got_eof = true;
                 break;
             }
-            strbuf_append_byte(&line, c);
         }
-        if (n <= 0 && line.length == 0) {
+        if (got_eof && line.length == 0) {
             strbuf_destroy(&line);
             return 1;
         }
@@ -617,26 +633,96 @@ static int builtin_type(vm_t *vm, int argc, value_t *argv)
     return result;
 }
 
+static int signame_to_num(const char *name)
+{
+    if (strcmp(name, "EXIT") == 0) {
+        return 0;
+    }
+    if (strcmp(name, "INT") == 0 || strcmp(name, "SIGINT") == 0) {
+        return SIGINT;
+    }
+    if (strcmp(name, "TERM") == 0 || strcmp(name, "SIGTERM") == 0) {
+        return SIGTERM;
+    }
+    if (strcmp(name, "HUP") == 0 || strcmp(name, "SIGHUP") == 0) {
+        return SIGHUP;
+    }
+    if (strcmp(name, "QUIT") == 0 || strcmp(name, "SIGQUIT") == 0) {
+        return SIGQUIT;
+    }
+    /* Try numeric */
+    char *endp;
+    long num = strtol(name, &endp, 10);
+    if (*endp == '\0' && num >= 0 && num < 32) {
+        return (int)num;
+    }
+    return -1;
+}
+
+static int builtin_trap(vm_t *vm, int argc, value_t *argv)
+{
+    if (argc < 2) {
+        return 0;
+    }
+
+    /* trap - SIGNAL: reset to default */
+    /* trap '' SIGNAL: ignore */
+    /* trap 'cmd' SIGNAL: register handler */
+    char *action = value_to_string(&argv[1]);
+
+    if (argc == 2) {
+        /* trap -l or trap with just a signal name -- not supported */
+        rcstr_release(action);
+        return 0;
+    }
+
+    int i;
+    for (i = 2; i < argc; i++) {
+        char *signame = value_to_string(&argv[i]);
+        int signum = signame_to_num(signame);
+        if (signum < 0) {
+            fprintf(stderr, "opsh: trap: %s: invalid signal\n", signame);
+            rcstr_release(signame);
+            rcstr_release(action);
+            return 1;
+        }
+
+        if (signum == 0) {
+            /* EXIT trap */
+            free(vm->exit_trap);
+            if (strcmp(action, "-") == 0) {
+                vm->exit_trap = NULL;
+            } else {
+                vm->exit_trap = xmalloc(strlen(action) + 1);
+                strcpy(vm->exit_trap, action);
+            }
+        } else if (signum < 32) {
+            free(vm->trap_handlers[signum]);
+            if (strcmp(action, "-") == 0) {
+                vm->trap_handlers[signum] = NULL;
+            } else {
+                vm->trap_handlers[signum] = xmalloc(strlen(action) + 1);
+                strcpy(vm->trap_handlers[signum], action);
+            }
+        }
+        rcstr_release(signame);
+    }
+
+    rcstr_release(action);
+    return 0;
+}
+
 const builtin_entry_t builtin_table[] = {
-    {"echo", builtin_echo},
-    {"exit", builtin_exit},
-    {"true", builtin_true},
-    {"false", builtin_false},
-    {":", builtin_colon},
-    {"cd", builtin_cd},
-    {"pwd", builtin_pwd},
-    {"export", builtin_export},
-    {"unset", builtin_unset},
-    {"readonly", builtin_readonly},
-    {"local", builtin_local},
-    {"shift", builtin_shift},
-    {"test", builtin_test},
-    {"[", builtin_test},
-    {"printf", builtin_printf},
-    {"read", builtin_read},
-    {"return", builtin_return},
-    {"type", builtin_type},
-    {NULL, NULL},
+    {"echo", builtin_echo},     {"exit", builtin_exit},
+    {"true", builtin_true},     {"false", builtin_false},
+    {":", builtin_colon},       {"cd", builtin_cd},
+    {"pwd", builtin_pwd},       {"export", builtin_export},
+    {"unset", builtin_unset},   {"readonly", builtin_readonly},
+    {"local", builtin_local},   {"shift", builtin_shift},
+    {"test", builtin_test},     {"[", builtin_test},
+    {"printf", builtin_printf}, {"read", builtin_read},
+    {"return", builtin_return}, {"type", builtin_type},
+    {"trap", builtin_trap},     {NULL, NULL},
 };
 
 int builtin_lookup(const char *name)
