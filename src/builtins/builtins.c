@@ -271,34 +271,56 @@ static int builtin_shift(vm_t *vm, int argc, value_t *argv)
     return 0;
 }
 
-/* test / [ builtin -- runtime expression parser */
-static int test_unary_file(const char *op, const char *path)
+/* Shared file test used by both test/[ builtin and [[ ]] VM handler */
+int test_file(const char *op, const char *path)
 {
+    /* -L and -h use lstat; everything else uses stat */
     struct stat st;
-    if (stat(path, &st) != 0) {
+    int sr;
+    if (strcmp(op, "-L") == 0 || strcmp(op, "-h") == 0) {
+        sr = lstat(path, &st);
+    } else {
+        sr = stat(path, &st);
+    }
+    if (sr != 0) {
         return 1;
     }
-    if (strcmp(op, "-f") == 0) {
+    if (strcmp(op, "-f") == 0)
         return S_ISREG(st.st_mode) ? 0 : 1;
-    }
-    if (strcmp(op, "-d") == 0) {
+    if (strcmp(op, "-d") == 0)
         return S_ISDIR(st.st_mode) ? 0 : 1;
-    }
-    if (strcmp(op, "-e") == 0) {
+    if (strcmp(op, "-e") == 0)
         return 0;
-    }
-    if (strcmp(op, "-s") == 0) {
-        return st.st_size > 0 ? 0 : 1;
-    }
-    if (strcmp(op, "-r") == 0) {
-        return access(path, R_OK) == 0 ? 0 : 1;
-    }
-    if (strcmp(op, "-w") == 0) {
-        return access(path, W_OK) == 0 ? 0 : 1;
-    }
-    if (strcmp(op, "-x") == 0) {
-        return access(path, X_OK) == 0 ? 0 : 1;
-    }
+    if (strcmp(op, "-s") == 0)
+        return (st.st_size > 0) ? 0 : 1;
+    if (strcmp(op, "-r") == 0)
+        return (access(path, R_OK) == 0) ? 0 : 1;
+    if (strcmp(op, "-w") == 0)
+        return (access(path, W_OK) == 0) ? 0 : 1;
+    if (strcmp(op, "-x") == 0)
+        return (access(path, X_OK) == 0) ? 0 : 1;
+    if (strcmp(op, "-L") == 0 || strcmp(op, "-h") == 0)
+        return S_ISLNK(st.st_mode) ? 0 : 1;
+    if (strcmp(op, "-p") == 0)
+        return S_ISFIFO(st.st_mode) ? 0 : 1;
+    if (strcmp(op, "-b") == 0)
+        return S_ISBLK(st.st_mode) ? 0 : 1;
+    if (strcmp(op, "-c") == 0)
+        return S_ISCHR(st.st_mode) ? 0 : 1;
+    if (strcmp(op, "-S") == 0)
+        return S_ISSOCK(st.st_mode) ? 0 : 1;
+    if (strcmp(op, "-g") == 0)
+        return (st.st_mode & S_ISGID) ? 0 : 1;
+    if (strcmp(op, "-u") == 0)
+        return (st.st_mode & S_ISUID) ? 0 : 1;
+    if (strcmp(op, "-k") == 0)
+        return (st.st_mode & S_ISVTX) ? 0 : 1;
+    if (strcmp(op, "-O") == 0)
+        return (st.st_uid == geteuid()) ? 0 : 1;
+    if (strcmp(op, "-G") == 0)
+        return (st.st_gid == getegid()) ? 0 : 1;
+    if (strcmp(op, "-N") == 0)
+        return 0; /* always true if file exists */
     return 1;
 }
 
@@ -353,7 +375,7 @@ static int builtin_test(vm_t *vm, int argc, value_t *argv)
         } else if (strcmp(op, "!") == 0) {
             result = (arg[0] != '\0') ? 1 : 0;
         } else if (op[0] == '-') {
-            result = test_unary_file(op, arg);
+            result = test_file(op, arg);
         }
 
         rcstr_release(op);

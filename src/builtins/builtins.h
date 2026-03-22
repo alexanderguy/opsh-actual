@@ -32,4 +32,8 @@ int builtin_lookup(const char *name);
 /* Number of registered builtins */
 int builtin_count(void);
 
+/* Shared file test: returns 0 (true) or 1 (false).
+ * op is a string like "-f", "-d", "-L", etc. */
+int test_file(const char *op, const char *path);
+
 #endif /* OPSH_BUILTINS_BUILTINS_H */
