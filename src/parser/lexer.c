@@ -681,6 +681,15 @@ static word_part_t *parse_word_units(lexer_t *lex, bool in_dquote, bool in_hered
                 while (*tail != NULL) {
                     tail = &(*tail)->next;
                 }
+            } else {
+                /* Empty quotes "": produce an empty WP_LITERAL so the
+                 * word is recognized as a valid (empty) token. */
+                word_part_t *wu = xcalloc(1, sizeof(*wu));
+                wu->type = WP_LITERAL;
+                wu->quoted = true;
+                wu->part.string = xstrdup("");
+                *tail = wu;
+                tail = &wu->next;
             }
             continue;
         }
