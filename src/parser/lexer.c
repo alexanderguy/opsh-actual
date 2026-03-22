@@ -187,6 +187,35 @@ static word_part_t *parse_param_expansion(lexer_t *lex)
 
     c = lexer_char(lex);
 
+    /* Check for array index: ${name[index]} */
+    if (c == '[') {
+        lexer_advance(lex);
+        c = lexer_char(lex);
+        if (c == '@' || c == '*') {
+            pe->index_all = true;
+            lexer_advance(lex);
+        } else {
+            /* Parse index expression as a word until ] */
+            strbuf_t idx_str;
+            strbuf_init(&idx_str);
+            while (lex->pos < lex->length && lexer_char(lex) != ']') {
+                strbuf_append_byte(&idx_str, lexer_char(lex));
+                lexer_advance(lex);
+            }
+            if (idx_str.length > 0) {
+                word_part_t *idx_wu = xcalloc(1, sizeof(*idx_wu));
+                idx_wu->type = WP_LITERAL;
+                idx_wu->part.string = strbuf_detach(&idx_str);
+                pe->index = idx_wu;
+            }
+            strbuf_destroy(&idx_str);
+        }
+        if (lexer_char(lex) == ']') {
+            lexer_advance(lex);
+        }
+        c = lexer_char(lex);
+    }
+
     /* ${name} -- simple braced expansion */
     if (c == '}') {
         lexer_advance(lex);
@@ -826,6 +855,13 @@ static bool is_assignment_word(const char *raw)
         return false;
     }
     for (p = raw + 1; p < eq; p++) {
+        if (*p == '[') {
+            /* Skip array index: name[index]= */
+            while (p < eq && *p != ']') {
+                p++;
+            }
+            continue;
+        }
         if (!isalnum((unsigned char)*p) && *p != '_') {
             return false;
         }

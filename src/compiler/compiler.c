@@ -182,6 +182,37 @@ static void compile_word(compiler_t *cc, word_part_t *w, unsigned int lineno)
                 }
             }
 
+            /* Array access: ${arr[N]} or ${#arr[@]} */
+            if (pe->index != NULL || pe->index_all) {
+                uint16_t name_idx = image_add_const(cc->image, pe->name);
+                if (pe->flags & PE_STRLEN) {
+                    /* ${#arr[@]} -- array length */
+                    image_emit_u8(cc->image, OP_GET_VAR);
+                    image_emit_u16(cc->image, name_idx);
+                    /* The result is a VT_ARRAY; we need its count */
+                    /* Push a special marker that OP_EXPAND_PARAM handles */
+                    image_emit_u8(cc->image, OP_EXPAND_PARAM);
+                    image_emit_u16(cc->image, name_idx);
+                    image_emit_u8(cc->image, (uint8_t)PE_NONE);
+                    image_emit_u8(cc->image, (uint8_t)(pe->flags & 0xFF));
+                    part_count++;
+                    break;
+                }
+                if (pe->index != NULL) {
+                    /* ${arr[N]} -- indexed access */
+                    compile_word(cc, pe->index, lineno);
+                    image_emit_u8(cc->image, OP_EXPAND_ARITH);
+                    image_emit_u8(cc->image, OP_GET_ARRAY);
+                    image_emit_u16(cc->image, name_idx);
+                } else {
+                    /* ${arr[@]} or ${arr[*]} -- expand all elements */
+                    image_emit_u8(cc->image, OP_GET_VAR);
+                    image_emit_u16(cc->image, name_idx);
+                }
+                part_count++;
+                break;
+            }
+
             /* Simple $var or ${var} */
             if (pe->type == PE_NONE) {
                 uint16_t name_idx = image_add_const(cc->image, pe->name);
@@ -600,6 +631,41 @@ static void compile_simple(compiler_t *cc, command_t *cmd)
             char *name = xmalloc(name_len + 1);
             memcpy(name, w->part.string, name_len);
             name[name_len] = '\0';
+
+            /* Check for array index: name[idx] */
+            char *bracket = strchr(name, '[');
+            if (bracket != NULL) {
+                /* Array element assignment: arr[N]=value */
+                *bracket = '\0';
+                char *idx_str = bracket + 1;
+                char *close = strchr(idx_str, ']');
+                if (close != NULL) {
+                    *close = '\0';
+                }
+                uint16_t arr_idx = image_add_const(cc->image, name);
+
+                /* Compile the value */
+                if (w->next == NULL) {
+                    const char *val = eq + 1;
+                    uint16_t val_idx = image_add_const(cc->image, val);
+                    image_emit_u8(cc->image, OP_PUSH_CONST);
+                    image_emit_u16(cc->image, val_idx);
+                } else {
+                    compile_word(cc, w->next, cmd->lineno);
+                }
+
+                /* Push the index */
+                uint16_t idx_const = image_add_const(cc->image, idx_str);
+                image_emit_u8(cc->image, OP_PUSH_CONST);
+                image_emit_u16(cc->image, idx_const);
+                image_emit_u8(cc->image, OP_EXPAND_ARITH);
+
+                image_emit_u8(cc->image, OP_SET_ARRAY);
+                image_emit_u16(cc->image, arr_idx);
+                free(name);
+                continue;
+            }
+
             uint16_t name_idx = image_add_const(cc->image, name);
             free(name);
 
@@ -640,6 +706,31 @@ static void compile_simple(compiler_t *cc, command_t *cmd)
         }
     }
 
+    /* Compile array assignments: arr=(a b c) */
+    {
+        plist_t *arr_names = &cmd->u.simple.array_names;
+        plist_t *arr_elems = &cmd->u.simple.array_elements;
+        size_t ai;
+        for (ai = 0; ai < arr_names->length; ai++) {
+            char *name = plist_get(arr_names, ai);
+            plist_t *elems = plist_get(arr_elems, ai);
+            uint16_t name_idx = image_add_const(cc->image, name);
+
+            /* Push each element value */
+            size_t ei;
+            for (ei = 0; ei < elems->length; ei++) {
+                word_part_t *w = plist_get(elems, ei);
+                compile_word(cc, w, cmd->lineno);
+            }
+            image_emit_u8(cc->image, OP_SET_ARRAY_BULK);
+            image_emit_u16(cc->image, name_idx);
+            image_emit_u16(cc->image, (uint16_t)elems->length);
+        }
+    }
+
+    if (words->length == 0 && cmd->u.simple.array_names.length > 0) {
+        return; /* array-only assignment, no command to run */
+    }
     if (words->length == 0) {
         return;
     }

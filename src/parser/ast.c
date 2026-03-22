@@ -20,6 +20,7 @@ void param_exp_free(param_exp_t *p)
     free(p->name);
     word_part_free(p->pattern);
     word_part_free(p->replacement);
+    word_part_free(p->index);
     /* node itself is arena-allocated */
 }
 
@@ -139,6 +140,20 @@ static void command_free_contents(command_t *c)
             word_part_free(plist_get(&c->u.simple.words, i));
         }
         plist_destroy(&c->u.simple.words);
+        for (i = 0; i < c->u.simple.array_names.length; i++) {
+            free(plist_get(&c->u.simple.array_names, i));
+        }
+        plist_destroy(&c->u.simple.array_names);
+        for (i = 0; i < c->u.simple.array_elements.length; i++) {
+            plist_t *elems = plist_get(&c->u.simple.array_elements, i);
+            size_t ei;
+            for (ei = 0; ei < elems->length; ei++) {
+                word_part_free(plist_get(elems, ei));
+            }
+            plist_destroy(elems);
+            free(elems);
+        }
+        plist_destroy(&c->u.simple.array_elements);
         break;
     case CT_GROUP:
     case CT_SUBSHELL:

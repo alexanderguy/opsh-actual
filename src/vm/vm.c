@@ -642,7 +642,11 @@ int vm_run(vm_t *vm)
             /* ${#var} -- string length */
             if (flags & PE_STRLEN) {
                 variable_t *var = environ_get(vm->env, name);
-                if (var != NULL && var->value.type == VT_STRING) {
+                if (var != NULL && var->value.type == VT_ARRAY) {
+                    char buf[32];
+                    snprintf(buf, sizeof(buf), "%d", var->value.data.array.count);
+                    vm_push(vm, value_string(rcstr_new(buf)));
+                } else if (var != NULL && var->value.type == VT_STRING) {
                     size_t len = utf8_strlen(var->value.data.string);
                     char buf[32];
                     snprintf(buf, sizeof(buf), "%zu", len);
@@ -1387,6 +1391,99 @@ int vm_run(vm_t *vm)
             uint16_t name_idx = read_u16(vm);
             const char *name = vm->image->const_pool[name_idx];
             environ_export(vm->env, name);
+            break;
+        }
+
+        case OP_GET_ARRAY: {
+            uint16_t name_idx = read_u16(vm);
+            const char *name = vm->image->const_pool[name_idx];
+            value_t idx_val = vm_pop(vm);
+            int idx = (int)value_to_integer(&idx_val);
+            value_destroy(&idx_val);
+            variable_t *var = environ_get(vm->env, name);
+            if (var != NULL && var->value.type == VT_ARRAY && idx >= 0 &&
+                idx < var->value.data.array.count) {
+                char *s = rcstr_retain(var->value.data.array.elements[idx]);
+                vm_push(vm, value_string(s));
+            } else {
+                vm_push(vm, value_string(rcstr_new("")));
+            }
+            break;
+        }
+
+        case OP_SET_ARRAY: {
+            uint16_t name_idx = read_u16(vm);
+            const char *name = vm->image->const_pool[name_idx];
+            value_t idx_val = vm_pop(vm);
+            value_t val = vm_pop(vm);
+            int idx = (int)value_to_integer(&idx_val);
+            value_destroy(&idx_val);
+            char *str = value_to_string(&val);
+            value_destroy(&val);
+
+            variable_t *var = environ_get(vm->env, name);
+            if (var != NULL && var->value.type == VT_ARRAY) {
+                /* Extend if needed */
+                if (idx >= var->value.data.array.count) {
+                    int new_count = idx + 1;
+                    var->value.data.array.elements = xrealloc(var->value.data.array.elements,
+                                                              (size_t)new_count * sizeof(char *));
+                    int ai;
+                    for (ai = var->value.data.array.count; ai < new_count; ai++) {
+                        var->value.data.array.elements[ai] = rcstr_new("");
+                    }
+                    var->value.data.array.count = new_count;
+                }
+                if (idx >= 0) {
+                    rcstr_release(var->value.data.array.elements[idx]);
+                    var->value.data.array.elements[idx] = str;
+                } else {
+                    rcstr_release(str);
+                }
+            } else {
+                /* Create new array */
+                int new_count = idx + 1;
+                if (new_count < 1) {
+                    new_count = 1;
+                }
+                char **elements = xcalloc((size_t)new_count, sizeof(char *));
+                int ai;
+                for (ai = 0; ai < new_count; ai++) {
+                    elements[ai] = rcstr_new("");
+                }
+                if (idx >= 0 && idx < new_count) {
+                    rcstr_release(elements[idx]);
+                    elements[idx] = str;
+                } else {
+                    rcstr_release(str);
+                }
+                value_t arr;
+                arr.type = VT_ARRAY;
+                arr.data.array.elements = elements;
+                arr.data.array.count = new_count;
+                environ_assign(vm->env, name, arr);
+            }
+            break;
+        }
+
+        case OP_SET_ARRAY_BULK: {
+            uint16_t name_idx = read_u16(vm);
+            uint16_t count = read_u16(vm);
+            const char *name = vm->image->const_pool[name_idx];
+
+            char **elements = xcalloc(count ? (size_t)count : 1, sizeof(char *));
+            int ai;
+            for (ai = (int)count - 1; ai >= 0; ai--) {
+                value_t v = vm_pop(vm);
+                elements[ai] = value_to_string(&v);
+                value_destroy(&v);
+            }
+
+            value_t arr;
+            arr.type = VT_ARRAY;
+            arr.data.array.elements = elements;
+            arr.data.array.count = (int)count;
+            environ_assign(vm->env, name, arr);
             break;
         }
 

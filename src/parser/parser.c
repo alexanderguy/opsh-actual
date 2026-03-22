@@ -621,6 +621,8 @@ static command_t *parse_simple_command(parser_t *p)
     refcount_init(&cmd->refcount);
     plist_init(&cmd->u.simple.assigns);
     plist_init(&cmd->u.simple.words);
+    plist_init(&cmd->u.simple.array_names);
+    plist_init(&cmd->u.simple.array_elements);
 
     io_redir_t **redir_tail = &cmd->redirs;
     bool has_words = false;
@@ -646,7 +648,43 @@ static command_t *parse_simple_command(parser_t *p)
         token_t tok = next(p);
 
         if (tok.type == TOK_ASSIGNMENT && !has_words) {
-            /* Assignment before any command word */
+            /* Check for array assignment: name=(...) */
+            if (peek(p)->type == TOK_LPAREN) {
+                /* Extract variable name from assignment word */
+                char *eq = tok.value ? strchr(tok.value, '=') : NULL;
+                if (eq != NULL) {
+                    size_t nlen = (size_t)(eq - tok.value);
+                    char *name = xmalloc(nlen + 1);
+                    memcpy(name, tok.value, nlen);
+                    name[nlen] = '\0';
+
+                    consume(p); /* consume ( */
+                    plist_t *elements = xcalloc(1, sizeof(plist_t));
+                    plist_init(elements);
+                    while (peek(p)->type != TOK_RPAREN && peek(p)->type != TOK_EOF) {
+                        if (peek(p)->type == TOK_NEWLINE) {
+                            consume(p);
+                            continue;
+                        }
+                        token_t elem = next(p);
+                        if (elem.word != NULL) {
+                            plist_add(elements, elem.word);
+                            elem.word = NULL;
+                        }
+                        free(elem.value);
+                    }
+                    if (peek(p)->type == TOK_RPAREN) {
+                        consume(p);
+                    }
+                    plist_add(&cmd->u.simple.array_names, name);
+                    plist_add(&cmd->u.simple.array_elements, elements);
+                }
+                word_part_free(tok.word);
+                free(tok.value);
+                continue;
+            }
+
+            /* Regular assignment before any command word */
             plist_add(&cmd->u.simple.assigns, tok.word);
             tok.word = NULL;
             free(tok.value);
@@ -703,7 +741,7 @@ static command_t *parse_simple_command(parser_t *p)
     p->lexer.recognize_reserved = true;
 
     if (cmd->u.simple.words.length == 0 && cmd->u.simple.assigns.length == 0 &&
-        cmd->redirs == NULL) {
+        cmd->u.simple.array_names.length == 0 && cmd->redirs == NULL) {
         command_free(cmd);
         return NULL;
     }
