@@ -1,6 +1,7 @@
 #include "agent/event.h"
 #include "compiler/compiler.h"
 #include "exec/signal.h"
+#include "format/format.h"
 #include "foundation/util.h"
 #include "lsp/lsp.h"
 #include "parser/parser.h"
@@ -151,6 +152,7 @@ static void usage(const char *progname)
 {
     fprintf(stderr, "usage: %s [options] <script>\n", progname);
     fprintf(stderr, "       %s build <script.opsh> -o <output.opsb>\n", progname);
+    fprintf(stderr, "       %s format [options] [file...]\n", progname);
     fprintf(stderr, "options:\n");
     fprintf(stderr, "  --agent-stdio   emit JSON-RPC events to stderr\n");
 }
@@ -255,6 +257,8 @@ int main(int argc, char *argv[])
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "lsp") == 0 && i == 1) {
             return lsp_main();
+        } else if (strcmp(argv[i], "format") == 0 && i == 1) {
+            return format_main(argc - 2, argv + 2);
         } else if (strcmp(argv[i], "build") == 0 && i == 1) {
             do_build = 1;
         } else if (strcmp(argv[i], "--agent-stdio") == 0) {

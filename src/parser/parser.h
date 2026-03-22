@@ -38,4 +38,7 @@ sh_list_t *parser_parse(parser_t *p);
 /* Return total error count (parser + lexer) */
 int parser_error_count(const parser_t *p);
 
+/* Detach the collected comment list from the parser. Caller owns the result. */
+comment_t *parser_take_comments(parser_t *p);
+
 #endif /* OPSH_PARSER_PARSER_H */

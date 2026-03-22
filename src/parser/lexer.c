@@ -54,10 +54,21 @@ static void lexer_skip_whitespace(lexer_t *lex)
         if (c == ' ' || c == '\t') {
             lex->pos++;
         } else if (c == '#') {
-            /* skip comment to end of line */
+            /* Capture comment text */
+            unsigned int comment_line = lex->lineno;
+            size_t start = lex->pos;
             while (lex->pos < lex->length && lex->source[lex->pos] != '\n') {
                 lex->pos++;
             }
+            size_t len = lex->pos - start;
+            comment_t *cm = xmalloc(sizeof(*cm));
+            cm->text = xmalloc(len + 1);
+            memcpy(cm->text, lex->source + start, len);
+            cm->text[len] = '\0';
+            cm->lineno = comment_line;
+            cm->next = NULL;
+            *lex->comments_tail = cm;
+            lex->comments_tail = &cm->next;
         } else if (c == '\\' && lexer_peek_char(lex, 1) == '\n') {
             /* line continuation */
             lex->pos += 2;
@@ -995,6 +1006,8 @@ void lexer_init(lexer_t *lex, const char *source, const char *filename)
     lex->recognize_reserved = true;
     lex->has_lookahead = false;
     lex->error_count = 0;
+    lex->comments = NULL;
+    lex->comments_tail = &lex->comments;
 }
 
 void lexer_destroy(lexer_t *lex)
@@ -1003,6 +1016,9 @@ void lexer_destroy(lexer_t *lex)
         token_free(&lex->lookahead);
         lex->has_lookahead = false;
     }
+    comment_free(lex->comments);
+    lex->comments = NULL;
+    lex->comments_tail = &lex->comments;
 }
 
 token_t lexer_next(lexer_t *lex)

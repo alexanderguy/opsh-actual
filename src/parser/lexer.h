@@ -90,6 +90,8 @@ typedef struct {
     bool has_lookahead;
     int error_count;
     arena_t *arena;            /* bump allocator for word_part/param_exp nodes (borrowed) */
+    comment_t *comments;       /* collected comments (linked list head) */
+    comment_t **comments_tail; /* tail pointer for O(1) append */
 } lexer_t;
 
 /* Initialize lexer from a string */
