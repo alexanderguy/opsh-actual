@@ -16,6 +16,7 @@
 #include <glob.h>
 #include <inttypes.h>
 #include <pwd.h>
+#include <regex.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1887,6 +1888,17 @@ int vm_run(vm_t *vm)
                     } else {
                         result = (st1.st_dev == st2.st_dev && st1.st_ino == st2.st_ino) ? 0 : 1;
                     }
+                }
+                break;
+            }
+            case TEST_REGEX: {
+                regex_t re;
+                if (regcomp(&re, rhs, REG_EXTENDED | REG_NOSUB) == 0) {
+                    result = (regexec(&re, lhs, 0, NULL, 0) == 0) ? 0 : 1;
+                    regfree(&re);
+                } else {
+                    fprintf(stderr, "opsh: invalid regex: %s\n", rhs);
+                    result = 2;
                 }
                 break;
             }

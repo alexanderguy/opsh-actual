@@ -160,6 +160,8 @@ typedef enum {
     TEST_FNT = 50, /* -nt newer than */
     TEST_FOT = 51, /* -ot older than */
     TEST_FEF = 52, /* -ef same file */
+    /* Regex match */
+    TEST_REGEX = 60, /* =~ */
 } test_op_t;
 
 /* EXEC_SIMPLE flags */

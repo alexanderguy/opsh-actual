@@ -1269,8 +1269,11 @@ static void compile_cond_expr(compiler_t *cc, cond_expr_t *d, unsigned int linen
 
     case COND_BINARY: {
         if (strcmp(d->u.binary.op, "=~") == 0) {
-            compiler_error(cc, lineno, "regex matching (=~) is not yet supported");
-            return;
+            compile_word(cc, d->u.binary.left, lineno);
+            compile_word(cc, d->u.binary.right, lineno);
+            image_emit_u8(cc->image, OP_TEST_BINARY);
+            image_emit_u8(cc->image, (uint8_t)TEST_REGEX);
+            break;
         }
         compile_word(cc, d->u.binary.left, lineno);
         compile_word(cc, d->u.binary.right, lineno);
