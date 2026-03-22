@@ -61,8 +61,23 @@ TEST_PARSER_BINS = $(TEST_PARSER_SRCS:tests/%.c=$(BUILD)/tests/%)
 TEST_VM_BINS = $(TEST_VM_SRCS:tests/%.c=$(BUILD)/tests/%)
 TEST_COMPILER_BINS = $(TEST_COMPILER_SRCS:tests/%.c=$(BUILD)/tests/%)
 
+# Fuzz targets (require LLVM clang with libfuzzer; Apple clang does not include it)
+# Usage: make fuzz-build FUZZ_CC=/opt/homebrew/opt/llvm/bin/clang
+FUZZ_CC ?= clang
+FUZZ_PARSER_BIN = $(BUILD)/fuzz/fuzz_parser
+FUZZ_COMPILE_BIN = $(BUILD)/fuzz/fuzz_compile
+FUZZ_IMAGE_BIN = $(BUILD)/fuzz/fuzz_image
+FUZZ_BINS = $(FUZZ_PARSER_BIN) $(FUZZ_COMPILE_BIN) $(FUZZ_IMAGE_BIN)
+
+FUZZ_CFLAGS = -std=c99 -Wall -Wextra -Werror -pedantic -Iinclude -Isrc \
+              -fsanitize=fuzzer,address,undefined -g -O1
+FUZZ_LDFLAGS = -fsanitize=fuzzer,address,undefined
+
+# Separate object directory for fuzz-instrumented objects (different CFLAGS)
+FUZZ_LIB_OBJS = $(LIB_OBJS:$(BUILD)/%=$(BUILD)/fuzz-objs/%)
+
 .PHONY: all clean test test-tap test-foundation test-parser test-vm test-compiler \
-        format format-check
+        format format-check fuzz-build
 
 all: $(BINARY)
 
@@ -112,13 +127,33 @@ test-vm: $(TEST_VM_BINS)
 test-compiler: $(TEST_COMPILER_BINS)
 	@for t in $(TEST_COMPILER_BINS); do echo "# Running $$t"; $$t || exit 1; done
 
+# Fuzz-instrumented library objects (compiled with fuzzer sanitizer flags)
+$(BUILD)/fuzz-objs/%.o: src/%.c
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) -MMD -MP -c -o $@ $<
+
+# Fuzz binaries
+$(FUZZ_PARSER_BIN): fuzz/fuzz_parser.c $(FUZZ_LIB_OBJS)
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS)
+
+$(FUZZ_COMPILE_BIN): fuzz/fuzz_compile.c $(FUZZ_LIB_OBJS)
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS)
+
+$(FUZZ_IMAGE_BIN): fuzz/fuzz_image.c $(FUZZ_LIB_OBJS)
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS)
+
+fuzz-build: $(FUZZ_BINS)
+
 clean:
 	rm -rf $(BUILD)
 
 format:
-	find src tests include -name '*.c' -o -name '*.h' | xargs clang-format -i
+	find src tests include fuzz -name '*.c' -o -name '*.h' | xargs clang-format -i
 
 format-check:
-	find src tests include -name '*.c' -o -name '*.h' | xargs clang-format --dry-run --Werror
+	find src tests include fuzz -name '*.c' -o -name '*.h' | xargs clang-format --dry-run --Werror
 
 -include $(DEPS)
