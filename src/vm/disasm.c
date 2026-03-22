@@ -67,6 +67,8 @@ static const char *opcode_name(uint8_t op)
         return "EXPAND_ARITH";
     case OP_SPLIT_FIELDS:
         return "SPLIT_FIELDS";
+    case OP_COLLECT_WORDS:
+        return "COLLECT_WORDS";
     case OP_GLOB:
         return "GLOB";
     case OP_QUOTE_REMOVE:

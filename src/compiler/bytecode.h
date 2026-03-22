@@ -52,11 +52,12 @@ typedef enum {
      * When flags has PE_STRLEN: -> value (no extra; returns string length)
      */
     OP_EXPAND_PARAM = 0x21,
-    OP_EXPAND_ARITH = 0x22, /* expr_str -> value */
-    OP_SPLIT_FIELDS = 0x23, /* value -> values... count */
-    OP_GLOB = 0x24,         /* pattern -> values... count */
-    OP_QUOTE_REMOVE = 0x25, /* value -> value */
-    OP_EXPAND_TILDE = 0x26, /* value -> value */
+    OP_EXPAND_ARITH = 0x22,  /* expr_str -> value */
+    OP_SPLIT_FIELDS = 0x23,  /* value -> values... count */
+    OP_GLOB = 0x24,          /* pattern -> values... count */
+    OP_QUOTE_REMOVE = 0x25,  /* value -> value */
+    OP_EXPAND_TILDE = 0x26,  /* value -> value */
+    OP_COLLECT_WORDS = 0x27, /* (val count)... ngroups -> args... argc */
 
     /* Control flow */
     OP_JMP = 0x30,       /* i32 offset */

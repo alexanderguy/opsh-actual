@@ -77,6 +77,7 @@ struct param_exp {
  */
 struct word_part {
     word_part_type_t type;
+    bool quoted; /* true if this unit appeared inside double quotes */
     word_part_t *next;
     union {
         char *string;      /* WP_LITERAL */

@@ -303,6 +303,42 @@ static void compile_word(compiler_t *cc, word_part_t *w, unsigned int lineno)
     }
 }
 
+/*
+ * Check if a word needs field splitting at runtime.
+ * A word needs splitting if it contains unquoted parameter expansions
+ * or command substitutions.
+ */
+static bool word_needs_split(word_part_t *w)
+{
+    word_part_t *unit;
+    for (unit = w; unit != NULL; unit = unit->next) {
+        if ((unit->type == WP_PARAM || unit->type == WP_CMDSUB) && !unit->quoted) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * Check if a literal word contains glob characters (* ? [).
+ */
+static bool word_has_glob(word_part_t *w)
+{
+    word_part_t *unit;
+    for (unit = w; unit != NULL; unit = unit->next) {
+        if (unit->type == WP_LITERAL && !unit->quoted) {
+            const char *p = unit->part.string;
+            while (*p) {
+                if (*p == '*' || *p == '?' || *p == '[') {
+                    return true;
+                }
+                p++;
+            }
+        }
+    }
+    return false;
+}
+
 static bool is_literal_word(word_part_t *w)
 {
     return w != NULL && w->type == WP_LITERAL && w->next == NULL;
@@ -429,13 +465,28 @@ static void compile_simple(compiler_t *cc, command_t *cmd)
         }
     }
 
+    /* Compile each word as a (values... count) group.
+     * Unquoted words with expansions get SPLIT_FIELDS.
+     * Unquoted literal words with glob chars get GLOB.
+     * Everything else gets count=1. */
     for (i = 0; i < words->length; i++) {
         word_part_t *w = plist_get(words, i);
         compile_word(cc, w, cmd->lineno);
+
+        if (word_needs_split(w)) {
+            image_emit_u8(cc->image, OP_SPLIT_FIELDS);
+        } else if (word_has_glob(w)) {
+            image_emit_u8(cc->image, OP_GLOB);
+        } else {
+            image_emit_u8(cc->image, OP_PUSH_INT);
+            image_emit_i32(cc->image, 1);
+        }
     }
 
+    /* Collect all word groups into flat argc/argv */
     image_emit_u8(cc->image, OP_PUSH_INT);
     image_emit_i32(cc->image, (int32_t)words->length);
+    image_emit_u8(cc->image, OP_COLLECT_WORDS);
 
     if (builtin_idx >= 0) {
         image_emit_u8(cc->image, OP_EXEC_BUILTIN);
@@ -516,15 +567,26 @@ static void compile_for(compiler_t *cc, command_t *cmd)
     plist_t *words = &cmd->u.for_clause.wordlist;
     uint16_t var_idx = image_add_const(cc->image, varname);
 
-    /* Push all word values onto the stack */
+    /* Push all word values with splitting/globbing as groups */
     for (i = 0; i < words->length; i++) {
         word_part_t *w = plist_get(words, i);
         compile_word(cc, w, cmd->lineno);
+
+        if (word_needs_split(w)) {
+            image_emit_u8(cc->image, OP_SPLIT_FIELDS);
+        } else if (word_has_glob(w)) {
+            image_emit_u8(cc->image, OP_GLOB);
+        } else {
+            image_emit_u8(cc->image, OP_PUSH_INT);
+            image_emit_i32(cc->image, 1);
+        }
     }
 
-    /* Push count and create iterator */
+    /* Collect all word groups and create iterator */
     image_emit_u8(cc->image, OP_PUSH_INT);
     image_emit_i32(cc->image, (int32_t)words->length);
+    image_emit_u8(cc->image, OP_COLLECT_WORDS);
+    /* Stack now has: values... total_count. Use as INIT_ITER group. */
     image_emit_u8(cc->image, OP_INIT_ITER);
     image_emit_u16(cc->image, 1); /* 1 group */
 
