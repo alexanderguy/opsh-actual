@@ -246,10 +246,20 @@ static void compile_word(compiler_t *cc, word_part_t *w, unsigned int lineno)
              * Layout: JMP over body, body..., HALT, then CMD_SUBST offset */
             char *cmdsub_source = NULL;
             if (unit->part.cmdsub.is_preparsed) {
-                compiler_error(cc, lineno, "preparsed command substitution not yet supported");
-                uint16_t empty = image_add_const(cc->image, "");
-                image_emit_u8(cc->image, OP_PUSH_CONST);
-                image_emit_u16(cc->image, empty);
+                /* Pre-parsed: AST is already available */
+                size_t skip_jump = emit_jump(cc, OP_JMP);
+                size_t sub_offset = cc->image->code_size;
+                compile_program(cc, unit->part.cmdsub.u.preparsed);
+                image_emit_u8(cc->image, OP_HALT);
+                patch_jump(cc, skip_jump);
+                image_emit_u8(cc->image, OP_CMD_SUBST);
+                {
+                    uint32_t uoff = (uint32_t)sub_offset;
+                    image_emit_u8(cc->image, (uint8_t)(uoff & 0xFF));
+                    image_emit_u8(cc->image, (uint8_t)((uoff >> 8) & 0xFF));
+                    image_emit_u8(cc->image, (uint8_t)((uoff >> 16) & 0xFF));
+                    image_emit_u8(cc->image, (uint8_t)((uoff >> 24) & 0xFF));
+                }
                 part_count++;
                 break;
             }
