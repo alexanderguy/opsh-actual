@@ -1461,30 +1461,36 @@ static void compile_sh_list(compiler_t *cc, sh_list_t *ao)
         return;
     }
 
-    /* Suppress errexit for commands in && || chains. POSIX says only
-     * non-last commands are exempt, but the jump-patching makes it
-     * difficult to selectively unsuppress the last command without
-     * breaking && || short-circuit semantics. */
+    /* Per POSIX, errexit is suppressed for all commands in an && || chain
+     * except the last. Wrap each non-last pipeline with PUSH/POP. The
+     * short-circuit JMP patches to after the POP, so if a pipeline is
+     * skipped, its PUSH/POP pair is skipped together (balanced). */
     bool has_connectors = (ao->pipelines->next != NULL);
+
     if (has_connectors) {
         image_emit_u8(cc->image, OP_ERREXIT_PUSH);
     }
-
     compile_and_or(cc, ao->pipelines);
+    if (has_connectors) {
+        image_emit_u8(cc->image, OP_ERREXIT_POP);
+    }
 
     for (pl = ao->pipelines; pl->next != NULL; pl = pl->next) {
+        bool is_last = (pl->next->next == NULL);
         size_t patch;
         if (pl->connector) {
             patch = emit_jump(cc, OP_JMP_FALSE);
         } else {
             patch = emit_jump(cc, OP_JMP_TRUE);
         }
+        if (!is_last) {
+            image_emit_u8(cc->image, OP_ERREXIT_PUSH);
+        }
         compile_and_or(cc, pl->next);
+        if (!is_last) {
+            image_emit_u8(cc->image, OP_ERREXIT_POP);
+        }
         patch_jump(cc, patch);
-    }
-
-    if (has_connectors) {
-        image_emit_u8(cc->image, OP_ERREXIT_POP);
     }
 }
 
