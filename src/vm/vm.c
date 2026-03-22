@@ -1899,35 +1899,7 @@ int vm_run(vm_t *vm)
             value_destroy(&pattern_val);
             value_destroy(&subject_val);
 
-            /* Simple glob matching: * matches anything, ? matches one char */
-            vm->laststatus = 1; /* assume no match */
-            {
-                const char *p = pattern;
-                const char *s = subject;
-                const char *star_p = NULL;
-                const char *star_s = NULL;
-
-                while (*s) {
-                    if (*p == '*') {
-                        star_p = p++;
-                        star_s = s;
-                    } else if (*p == '?' || *p == *s) {
-                        p++;
-                        s++;
-                    } else if (star_p != NULL) {
-                        p = star_p + 1;
-                        s = ++star_s;
-                    } else {
-                        break;
-                    }
-                }
-                while (*p == '*') {
-                    p++;
-                }
-                if (*p == '\0' && *s == '\0') {
-                    vm->laststatus = 0; /* match */
-                }
-            }
+            vm->laststatus = (fnmatch(pattern, subject, 0) == 0) ? 0 : 1;
 
             rcstr_release(pattern);
             rcstr_release(subject);
