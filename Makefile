@@ -15,16 +15,18 @@ BINARY = $(BUILD)/opsh
 # Source files
 FOUNDATION_SRCS = src/foundation/util.c src/foundation/strbuf.c \
                   src/foundation/plist.c src/foundation/hashtable.c \
-                  src/foundation/arena.c src/foundation/rcstr.c
+                  src/foundation/arena.c src/foundation/rcstr.c \
+                  src/foundation/json.c
 PARSER_SRCS = src/parser/ast.c src/parser/lexer.c src/parser/parser.c
 VM_SRCS = src/vm/value.c src/vm/vm.c src/vm/disasm.c
 EXEC_SRCS = src/exec/variable.c src/exec/signal.c
 BUILTIN_SRCS = src/builtins/builtins.c
 COMPILER_SRCS = src/compiler/compiler.c
+AGENT_SRCS = src/agent/event.c
 MAIN_SRCS = src/main.c
 
 ALL_SRCS = $(FOUNDATION_SRCS) $(PARSER_SRCS) $(VM_SRCS) $(EXEC_SRCS) \
-           $(BUILTIN_SRCS) $(COMPILER_SRCS) $(MAIN_SRCS)
+           $(BUILTIN_SRCS) $(COMPILER_SRCS) $(AGENT_SRCS) $(MAIN_SRCS)
 ALL_OBJS = $(ALL_SRCS:src/%.c=$(BUILD)/%.o)
 DEPS = $(ALL_OBJS:.o=.d)
 
@@ -35,10 +37,11 @@ VM_OBJS = $(VM_SRCS:src/%.c=$(BUILD)/%.o)
 EXEC_OBJS = $(EXEC_SRCS:src/%.c=$(BUILD)/%.o)
 BUILTIN_OBJS = $(BUILTIN_SRCS:src/%.c=$(BUILD)/%.o)
 COMPILER_OBJS = $(COMPILER_SRCS:src/%.c=$(BUILD)/%.o)
+AGENT_OBJS = $(AGENT_SRCS:src/%.c=$(BUILD)/%.o)
 
 # All non-main objects (for test linking)
 LIB_OBJS = $(FOUNDATION_OBJS) $(PARSER_OBJS) $(VM_OBJS) $(EXEC_OBJS) \
-           $(BUILTIN_OBJS) $(COMPILER_OBJS)
+           $(BUILTIN_OBJS) $(COMPILER_OBJS) $(AGENT_OBJS)
 
 # Test sources
 TEST_TAP_SRC = tests/test_tap.c

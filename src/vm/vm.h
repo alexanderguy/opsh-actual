@@ -1,6 +1,7 @@
 #ifndef OPSH_VM_VM_H
 #define OPSH_VM_VM_H
 
+#include "agent/event.h"
 #include "compiler/bytecode.h"
 #include "exec/variable.h"
 #include "opsh/value.h"
@@ -121,6 +122,9 @@ typedef struct vm {
     size_t captured_stdout_cap;
 
     hashtable_t modules_loaded; /* module name -> (void*)1 (already initialized?) */
+
+    event_sink_t *event_sink; /* event output (NULL = no events) */
+    int64_t next_command_id;  /* monotonic command ID counter */
 
     bool halted;
     bool return_requested; /* set by `return` builtin to trigger OP_RET */
