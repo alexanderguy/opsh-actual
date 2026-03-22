@@ -18,7 +18,7 @@ FOUNDATION_SRCS = src/foundation/util.c src/foundation/strbuf.c \
                   src/foundation/arena.c src/foundation/rcstr.c
 PARSER_SRCS = src/parser/ast.c src/parser/lexer.c src/parser/parser.c
 VM_SRCS = src/vm/value.c src/vm/vm.c src/vm/disasm.c
-EXEC_SRCS = src/exec/variable.c
+EXEC_SRCS = src/exec/variable.c src/exec/signal.c
 BUILTIN_SRCS = src/builtins/builtins.c
 COMPILER_SRCS = src/compiler/compiler.c
 MAIN_SRCS = src/main.c

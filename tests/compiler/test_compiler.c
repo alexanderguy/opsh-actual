@@ -799,9 +799,35 @@ static void test_glob(void)
     unlink("tmp/glob_b.txt");
 }
 
+static void test_exit_trap(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("trap 'echo cleanup' EXIT\nexit 0", &status);
+    tap_is_str(out, "cleanup\n", "EXIT trap: runs on exit");
+    free(out);
+}
+
+static void test_trap_builtin(void)
+{
+    int status;
+    char *out;
+
+    /* trap with no action -- should not crash */
+    out = compile_and_run("trap '' INT", &status);
+    tap_is_int(status, 0, "trap: ignore INT succeeds");
+    free(out);
+
+    /* trap reset */
+    out = compile_and_run("trap - INT", &status);
+    tap_is_int(status, 0, "trap: reset INT succeeds");
+    free(out);
+}
+
 int main(void)
 {
-    tap_plan(99);
+    tap_plan(102);
 
     test_echo_hello_world();
     test_echo_single_word();
@@ -858,6 +884,8 @@ int main(void)
     test_field_splitting_ifs();
     test_no_split_in_assignment();
     test_glob();
+    test_exit_trap();
+    test_trap_builtin();
 
     return tap_done();
 }
