@@ -1,0 +1,75 @@
+CC ?= clang
+CFLAGS = -std=c99 -Wall -Wextra -Werror -pedantic -Iinclude -Isrc
+LDFLAGS =
+
+ifdef RELEASE
+CFLAGS += -O2 -DNDEBUG
+else
+CFLAGS += -fsanitize=address,undefined -g -O0
+LDFLAGS += -fsanitize=address,undefined
+endif
+
+BUILD = build
+BINARY = $(BUILD)/opsh
+
+# Source files
+FOUNDATION_SRCS = src/foundation/util.c src/foundation/strbuf.c \
+                  src/foundation/plist.c src/foundation/hashtable.c
+MAIN_SRCS = src/main.c
+
+ALL_SRCS = $(FOUNDATION_SRCS) $(MAIN_SRCS)
+ALL_OBJS = $(ALL_SRCS:src/%.c=$(BUILD)/%.o)
+DEPS = $(ALL_OBJS:.o=.d)
+
+# Object groups for test linking
+FOUNDATION_OBJS = $(FOUNDATION_SRCS:src/%.c=$(BUILD)/%.o)
+
+# Test sources
+TEST_TAP_SRC = tests/test_tap.c
+TEST_FOUNDATION_SRCS = tests/foundation/test_strbuf.c \
+                       tests/foundation/test_plist.c \
+                       tests/foundation/test_hashtable.c \
+                       tests/foundation/test_util.c
+
+TEST_TAP_BIN = $(BUILD)/tests/test_tap
+TEST_FOUNDATION_BINS = $(TEST_FOUNDATION_SRCS:tests/%.c=$(BUILD)/tests/%)
+
+.PHONY: all clean test test-tap test-foundation format format-check
+
+all: $(BINARY)
+
+$(BINARY): $(ALL_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(LDFLAGS) -o $@ $^
+
+$(BUILD)/%.o: src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
+
+# Test binaries
+$(TEST_TAP_BIN): $(TEST_TAP_SRC) tests/tap.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
+
+$(BUILD)/tests/foundation/%: tests/foundation/%.c tests/tap.h $(FOUNDATION_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(FOUNDATION_OBJS)
+
+test: test-tap test-foundation
+
+test-tap: $(TEST_TAP_BIN)
+	$(TEST_TAP_BIN)
+
+test-foundation: $(TEST_FOUNDATION_BINS)
+	@for t in $(TEST_FOUNDATION_BINS); do echo "# Running $$t"; $$t || exit 1; done
+
+clean:
+	rm -rf $(BUILD)
+
+format:
+	find src tests include -name '*.c' -o -name '*.h' | xargs clang-format -i
+
+format-check:
+	find src tests include -name '*.c' -o -name '*.h' | xargs clang-format --dry-run --Werror
+
+-include $(DEPS)
