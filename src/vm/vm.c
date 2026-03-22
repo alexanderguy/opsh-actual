@@ -6,9 +6,12 @@
 #include "foundation/util.h"
 #include "parser/ast.h"
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 /*
  * Bytecode image management
@@ -977,10 +980,417 @@ int vm_run(vm_t *vm)
             break;
         }
 
-        case OP_REDIR_SAVE:
-        case OP_REDIR_RESTORE:
-            /* Stubs; no-ops until Phase 4f */
+        case OP_CMD_SUBST: {
+            uint32_t sub_offset = (uint32_t)read_u8(vm);
+            sub_offset |= (uint32_t)read_u8(vm) << 8;
+            sub_offset |= (uint32_t)read_u8(vm) << 16;
+            sub_offset |= (uint32_t)read_u8(vm) << 24;
+
+            int pipefd[2];
+            if (pipe(pipefd) < 0) {
+                fprintf(stderr, "opsh: pipe failed\n");
+                vm_push(vm, value_string(rcstr_new("")));
+                vm->laststatus = 1;
+                break;
+            }
+
+            /* Flush stdio before forking to avoid duplicated buffered output */
+            fflush(stdout);
+            fflush(stderr);
+
+            pid_t pid = fork();
+            if (pid < 0) {
+                fprintf(stderr, "opsh: fork failed\n");
+                close(pipefd[0]);
+                close(pipefd[1]);
+                vm_push(vm, value_string(rcstr_new("")));
+                vm->laststatus = 1;
+                break;
+            }
+
+            if (pid == 0) {
+                /* Child: redirect stdout to pipe write end */
+                close(pipefd[0]);
+                dup2(pipefd[1], STDOUT_FILENO);
+                close(pipefd[1]);
+
+                /* Execute the sub-segment */
+                vm->ip = (size_t)sub_offset;
+                vm->halted = false;
+                vm->captured_stdout = NULL;
+                {
+                    int child_status = vm_run(vm);
+                    fflush(stdout);
+                    _exit(child_status);
+                }
+            }
+
+            /* Parent: read from pipe */
+            close(pipefd[1]);
+            strbuf_t captured;
+            strbuf_init(&captured);
+            {
+                char buf[4096];
+                ssize_t n;
+                while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
+                    strbuf_append_bytes(&captured, buf, (size_t)n);
+                }
+            }
+            close(pipefd[0]);
+
+            int wstatus;
+            waitpid(pid, &wstatus, 0);
+            if (WIFEXITED(wstatus)) {
+                vm->laststatus = WEXITSTATUS(wstatus);
+            } else {
+                vm->laststatus = 1;
+            }
+
+            /* Strip trailing newlines */
+            while (captured.length > 0 && captured.contents[captured.length - 1] == '\n') {
+                captured.length--;
+                captured.contents[captured.length] = '\0';
+            }
+
+            {
+                char *tmp = strbuf_detach(&captured);
+                vm_push(vm, value_string(rcstr_new(tmp)));
+                free(tmp);
+            }
             break;
+        }
+
+        case OP_PIPELINE: {
+            /* Read cmd_count, then collect PIPELINE_CMD offsets */
+            uint16_t cmd_count = read_u16(vm);
+            uint32_t *offsets = xcalloc(cmd_count ? cmd_count : 1, sizeof(uint32_t));
+            int pi;
+
+            for (pi = 0; pi < (int)cmd_count; pi++) {
+                uint8_t next_op = read_u8(vm);
+                if (next_op != OP_PIPELINE_CMD) {
+                    fprintf(stderr, "opsh: expected PIPELINE_CMD, got 0x%02x\n", next_op);
+                    vm->laststatus = 1;
+                    vm->halted = true;
+                    free(offsets);
+                    goto pipeline_done;
+                }
+                uint32_t off = (uint32_t)read_u8(vm);
+                off |= (uint32_t)read_u8(vm) << 8;
+                off |= (uint32_t)read_u8(vm) << 16;
+                off |= (uint32_t)read_u8(vm) << 24;
+                offsets[pi] = off;
+            }
+
+            /* Read PIPELINE_END */
+            {
+                uint8_t end_op = read_u8(vm);
+                if (end_op != OP_PIPELINE_END) {
+                    fprintf(stderr, "opsh: expected PIPELINE_END, got 0x%02x\n", end_op);
+                    vm->laststatus = 1;
+                    vm->halted = true;
+                    free(offsets);
+                    goto pipeline_done;
+                }
+            }
+            uint8_t pl_flags = read_u8(vm);
+            bool negate = (pl_flags & 1) != 0;
+
+            /* Create pipes and fork children */
+            pid_t *pids = xcalloc((size_t)cmd_count, sizeof(pid_t));
+            int prev_read_fd = -1;
+
+            for (pi = 0; pi < (int)cmd_count; pi++) {
+                int pipefd[2] = {-1, -1};
+                bool has_pipe = (pi < (int)cmd_count - 1);
+
+                if (has_pipe) {
+                    if (pipe(pipefd) < 0) {
+                        fprintf(stderr, "opsh: pipe failed\n");
+                        vm->laststatus = 1;
+                        break;
+                    }
+                }
+
+                fflush(stdout);
+                fflush(stderr);
+                pid_t pid = fork();
+                if (pid < 0) {
+                    fprintf(stderr, "opsh: fork failed\n");
+                    if (has_pipe) {
+                        close(pipefd[0]);
+                        close(pipefd[1]);
+                    }
+                    vm->laststatus = 1;
+                    break;
+                }
+
+                if (pid == 0) {
+                    /* Child */
+                    if (prev_read_fd >= 0) {
+                        dup2(prev_read_fd, STDIN_FILENO);
+                        close(prev_read_fd);
+                    }
+                    if (has_pipe) {
+                        close(pipefd[0]);
+                        dup2(pipefd[1], STDOUT_FILENO);
+                        close(pipefd[1]);
+                    }
+
+                    vm->ip = (size_t)offsets[pi];
+                    vm->halted = false;
+                    vm->captured_stdout = NULL;
+                    {
+                        int child_status = vm_run(vm);
+                        fflush(stdout);
+                        _exit(child_status);
+                    }
+                }
+
+                /* Parent */
+                pids[pi] = pid;
+                if (prev_read_fd >= 0) {
+                    close(prev_read_fd);
+                }
+                if (has_pipe) {
+                    close(pipefd[1]);
+                    prev_read_fd = pipefd[0];
+                } else {
+                    prev_read_fd = -1;
+                }
+            }
+
+            /* Clean up any remaining pipe FD */
+            if (prev_read_fd >= 0) {
+                close(prev_read_fd);
+            }
+
+            /* Wait for all children */
+            {
+                int last_status = 0;
+                int wi;
+                for (wi = 0; wi < (int)cmd_count; wi++) {
+                    if (pids[wi] > 0) {
+                        int wstatus;
+                        waitpid(pids[wi], &wstatus, 0);
+                        if (WIFEXITED(wstatus)) {
+                            last_status = WEXITSTATUS(wstatus);
+                        } else {
+                            last_status = 1;
+                        }
+                    }
+                }
+                vm->laststatus = last_status;
+            }
+
+            if (negate) {
+                vm->laststatus = (vm->laststatus == 0) ? 1 : 0;
+            }
+
+            free(pids);
+            free(offsets);
+        pipeline_done:
+            break;
+        }
+
+        case OP_PIPELINE_CMD:
+        case OP_PIPELINE_END:
+            /* These are consumed by OP_PIPELINE; should not be reached independently */
+            fprintf(stderr, "opsh: unexpected PIPELINE_CMD/END outside pipeline\n");
+            vm->laststatus = 1;
+            vm->halted = true;
+            break;
+
+        case OP_REDIR_SAVE: {
+            if (vm->redir_depth >= VM_REDIR_STACK_MAX) {
+                fprintf(stderr, "opsh: redirection stack overflow\n");
+                vm->laststatus = 1;
+                vm->halted = true;
+                break;
+            }
+            redir_frame_t *frame = &vm->redir_stack[vm->redir_depth++];
+            frame->count = 0;
+            break;
+        }
+
+        case OP_REDIR_RESTORE: {
+            if (vm->redir_depth <= 0) {
+                break;
+            }
+            redir_frame_t *frame = &vm->redir_stack[--vm->redir_depth];
+            int ri;
+            /* Restore saved FDs in reverse order */
+            for (ri = frame->count - 1; ri >= 0; ri--) {
+                saved_fd_t *sf = &frame->entries[ri];
+                if (sf->saved_fd >= 0) {
+                    dup2(sf->saved_fd, sf->original_fd);
+                    close(sf->saved_fd);
+                } else {
+                    /* FD was closed; close it again */
+                    close(sf->original_fd);
+                }
+            }
+            break;
+        }
+
+        case OP_REDIR_OPEN: {
+            uint8_t fd = read_u8(vm);
+            uint8_t rtype = read_u8(vm);
+            value_t filename_val = vm_pop(vm);
+            char *filename = value_to_string(&filename_val);
+            value_destroy(&filename_val);
+
+            int flags_val = 0;
+            int new_fd = -1;
+
+            switch ((io_redir_type_t)rtype) {
+            case REDIR_IN:
+                flags_val = O_RDONLY;
+                break;
+            case REDIR_OUT:
+                flags_val = O_WRONLY | O_CREAT | O_TRUNC;
+                break;
+            case REDIR_APPEND:
+                flags_val = O_WRONLY | O_CREAT | O_APPEND;
+                break;
+            case REDIR_CLOBBER:
+                flags_val = O_WRONLY | O_CREAT | O_TRUNC;
+                break;
+            case REDIR_RDWR:
+                flags_val = O_RDWR | O_CREAT;
+                break;
+            default:
+                break;
+            }
+
+            new_fd = open(filename, flags_val, 0666);
+            if (new_fd < 0) {
+                fprintf(stderr, "opsh: %s: cannot open\n", filename);
+                rcstr_release(filename);
+                vm->laststatus = 1;
+                break;
+            }
+            rcstr_release(filename);
+
+            /* Save the original FD */
+            if (vm->redir_depth > 0) {
+                redir_frame_t *frame = &vm->redir_stack[vm->redir_depth - 1];
+                if (frame->count < 16) {
+                    int saved = dup(fd);
+                    if (saved >= 0) {
+                        frame->entries[frame->count].original_fd = fd;
+                        frame->entries[frame->count].saved_fd = saved;
+                        frame->count++;
+                    }
+                }
+            }
+
+            dup2(new_fd, fd);
+            if (new_fd != (int)fd) {
+                close(new_fd);
+            }
+            break;
+        }
+
+        case OP_REDIR_DUP: {
+            uint8_t fd = read_u8(vm);
+            uint8_t flags = read_u8(vm);
+            (void)flags;
+            value_t target_val = vm_pop(vm);
+            char *target_str = value_to_string(&target_val);
+            value_destroy(&target_val);
+            int target_fd = atoi(target_str);
+            rcstr_release(target_str);
+
+            /* Save the original FD */
+            if (vm->redir_depth > 0) {
+                redir_frame_t *frame = &vm->redir_stack[vm->redir_depth - 1];
+                if (frame->count < 16) {
+                    int saved = dup(fd);
+                    if (saved >= 0) {
+                        frame->entries[frame->count].original_fd = fd;
+                        frame->entries[frame->count].saved_fd = saved;
+                        frame->count++;
+                    }
+                }
+            }
+
+            dup2(target_fd, fd);
+            break;
+        }
+
+        case OP_REDIR_CLOSE: {
+            uint8_t fd = read_u8(vm);
+
+            /* Save the original FD */
+            if (vm->redir_depth > 0) {
+                redir_frame_t *frame = &vm->redir_stack[vm->redir_depth - 1];
+                if (frame->count < 16) {
+                    int saved = dup(fd);
+                    frame->entries[frame->count].original_fd = fd;
+                    frame->entries[frame->count].saved_fd = saved;
+                    frame->count++;
+                }
+            }
+
+            close(fd);
+            break;
+        }
+
+        case OP_REDIR_HERE: {
+            uint8_t fd = read_u8(vm);
+            uint8_t here_flags = read_u8(vm);
+            (void)here_flags;
+            value_t content_val = vm_pop(vm);
+            char *content = value_to_string(&content_val);
+            value_destroy(&content_val);
+
+            /* Use a temporary file to avoid pipe deadlock on large content */
+            const char *tmpdir = getenv("TMPDIR");
+            if (tmpdir == NULL) {
+                tmpdir = "/tmp";
+            }
+            char tmppath[4096];
+            snprintf(tmppath, sizeof(tmppath), "%s/opsh-here-XXXXXX", tmpdir);
+            int tmpfd = mkstemp(tmppath);
+            if (tmpfd < 0) {
+                fprintf(stderr, "opsh: cannot create temp file for here-document\n");
+                rcstr_release(content);
+                vm->laststatus = 1;
+                break;
+            }
+            unlink(tmppath); /* delete on close */
+
+            /* Write content */
+            {
+                size_t len = strlen(content);
+                size_t written = 0;
+                while (written < len) {
+                    ssize_t n = write(tmpfd, content + written, len - written);
+                    if (n <= 0) {
+                        break;
+                    }
+                    written += (size_t)n;
+                }
+            }
+            lseek(tmpfd, 0, SEEK_SET);
+            rcstr_release(content);
+
+            /* Save the original FD and redirect */
+            if (vm->redir_depth > 0) {
+                redir_frame_t *frame = &vm->redir_stack[vm->redir_depth - 1];
+                if (frame->count < 16) {
+                    int saved = dup(fd);
+                    frame->entries[frame->count].original_fd = fd;
+                    frame->entries[frame->count].saved_fd = saved;
+                    frame->count++;
+                }
+            }
+
+            dup2(tmpfd, fd);
+            close(tmpfd);
+            break;
+        }
 
         case OP_HALT:
             vm->halted = true;

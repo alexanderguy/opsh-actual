@@ -6,6 +6,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static void test_echo_hello_world(void)
 {
@@ -24,17 +25,29 @@ static void test_echo_hello_world(void)
     ASM_REDIR_RESTORE(img);
     ASM_HALT(img);
 
+    /* Capture fd 1 via pipe */
+    int pipefd[2];
+    pipe(pipefd);
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    dup2(pipefd[1], STDOUT_FILENO);
+    close(pipefd[1]);
+
     vm_t vm;
     vm_init(&vm, img);
-
-    /* Capture stdout */
-    vm.captured_stdout = xcalloc(1, 256);
-    vm.captured_stdout_cap = 256;
-    vm.captured_stdout_len = 0;
-
     int status = vm_run(&vm);
+
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+
+    char buf[4096];
+    ssize_t n = read(pipefd[0], buf, sizeof(buf) - 1);
+    close(pipefd[0]);
+    buf[n > 0 ? n : 0] = '\0';
+
     tap_is_int(status, 0, "echo hello world: exit status 0");
-    tap_is_str(vm.captured_stdout, "hello world\n", "echo hello world: output");
+    tap_is_str(buf, "hello world\n", "echo hello world: output");
 
     vm_destroy(&vm);
     image_free(img);

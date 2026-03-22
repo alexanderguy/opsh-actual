@@ -8,11 +8,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int builtin_echo(vm_t *vm, int argc, value_t *argv)
 {
     int i;
     strbuf_t out;
+    (void)vm;
     strbuf_init(&out);
 
     for (i = 1; i < argc; i++) {
@@ -25,17 +27,16 @@ static int builtin_echo(vm_t *vm, int argc, value_t *argv)
     }
     strbuf_append_byte(&out, '\n');
 
-    if (vm->captured_stdout != NULL) {
-        size_t needed = vm->captured_stdout_len + out.length;
-        if (needed >= vm->captured_stdout_cap) {
-            vm->captured_stdout_cap = needed * 2 + 64;
-            vm->captured_stdout = xrealloc(vm->captured_stdout, vm->captured_stdout_cap);
+    /* Always write to fd 1 so redirections take effect */
+    {
+        size_t written = 0;
+        while (written < out.length) {
+            ssize_t n = write(STDOUT_FILENO, out.contents + written, out.length - written);
+            if (n <= 0) {
+                break;
+            }
+            written += (size_t)n;
         }
-        memcpy(vm->captured_stdout + vm->captured_stdout_len, out.contents, out.length);
-        vm->captured_stdout_len += out.length;
-        vm->captured_stdout[vm->captured_stdout_len] = '\0';
-    } else {
-        fputs(out.contents, stdout);
     }
 
     strbuf_destroy(&out);
