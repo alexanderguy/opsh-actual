@@ -1709,11 +1709,12 @@ bytecode_image_t *compile(sh_list_t *program, const char *filename)
 
     /* Transfer function table to the image */
     if (cc.func_count > 0) {
-        image->funcs = xmalloc((size_t)cc.func_count * sizeof(vm_func_t));
+        image->funcs = xcalloc((size_t)cc.func_count, sizeof(vm_func_t));
         image->func_count = cc.func_count;
         for (i = 0; i < cc.func_count; i++) {
             image->funcs[i].name = cc.func_table[i].name;
             image->funcs[i].bytecode_offset = cc.func_table[i].bytecode_offset;
+            image->funcs[i].image = NULL;
         }
     }
 

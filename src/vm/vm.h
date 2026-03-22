@@ -15,14 +15,6 @@
 #define VM_CONST_POOL_MAX 65535
 
 /*
- * Function table entry.
- */
-typedef struct {
-    const char *name; /* owned by the image */
-    size_t bytecode_offset;
-} vm_func_t;
-
-/*
  * Module table entry.
  */
 typedef struct {
@@ -32,8 +24,20 @@ typedef struct {
 
 /*
  * Bytecode image: constant pool + bytecode segments.
+ * Forward-declared as struct bytecode_image for use in vm_func_t.
+ */
+typedef struct bytecode_image bytecode_image_t;
+
+/*
+ * Function table entry.
  */
 typedef struct {
+    const char *name; /* owned by the image */
+    size_t bytecode_offset;
+    bytecode_image_t *image; /* image containing this function's bytecode (NULL = main) */
+} vm_func_t;
+
+struct bytecode_image {
     char **const_pool; /* array of string constants (owned) */
     uint16_t const_count;
     uint16_t const_cap; /* allocated capacity */
@@ -49,7 +53,7 @@ typedef struct {
     /* Module table (compiled modules) */
     vm_module_t *modules;
     int module_count;
-} bytecode_image_t;
+};
 
 #define VM_CALL_STACK_MAX 256
 #define VM_LOOP_STACK_MAX 64
@@ -80,6 +84,7 @@ typedef struct {
     environ_t *saved_env;
     int saved_stack_base;
     int saved_loop_depth;
+    bytecode_image_t *saved_image; /* image to restore on return */
 } call_frame_t;
 
 /*
@@ -95,8 +100,9 @@ typedef struct {
  * VM state.
  */
 typedef struct vm {
-    bytecode_image_t *image;
-    size_t ip; /* instruction pointer */
+    bytecode_image_t *image;      /* currently active image */
+    bytecode_image_t *main_image; /* the original image (for NULL function refs) */
+    size_t ip;                    /* instruction pointer */
 
     value_t stack[VM_STACK_MAX];
     int stack_top; /* index of next free slot */
@@ -123,6 +129,11 @@ typedef struct vm {
     size_t captured_stdout_cap;
 
     hashtable_t modules_loaded; /* module name -> (void*)1 (already initialized?) */
+
+    /* Sub-images from eval/source kept alive for function references */
+    bytecode_image_t **eval_images;
+    int eval_image_count;
+    int eval_image_cap;
 
     event_sink_t *event_sink; /* event output (NULL = no events) */
     int64_t next_command_id;  /* monotonic command ID counter */
