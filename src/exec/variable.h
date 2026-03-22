@@ -11,6 +11,7 @@
  */
 #define VF_EXPORT (1 << 0)
 #define VF_READONLY (1 << 1)
+#define VF_PREFIX (1 << 2) /* prefix assignment: export to child only */
 
 /*
  * A single variable entry.
@@ -63,5 +64,9 @@ void environ_set_local(environ_t *env, const char *name, value_t value);
 
 /* Remove a variable from the innermost scope that contains it. */
 void environ_unset(environ_t *env, const char *name);
+
+/* Export all VF_EXPORT and VF_PREFIX variables to the C environment via setenv.
+ * Call in a forked child before execvp. */
+void environ_export_to_c(environ_t *env);
 
 #endif /* OPSH_EXEC_VARIABLE_H */
