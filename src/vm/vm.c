@@ -148,12 +148,20 @@ void vm_init(vm_t *vm, bytecode_image_t *image)
 {
     memset(vm, 0, sizeof(*vm));
     vm->image = image;
+    vm->main_image = image;
     vm->ip = 0;
     vm->stack_top = 0;
     vm->call_depth = 0;
     vm->loop_depth = 0;
-    vm->func_table = image ? image->funcs : NULL;
-    vm->func_count = image ? image->func_count : 0;
+    /* Copy the function table so it can be extended independently */
+    if (image != NULL && image->func_count > 0) {
+        vm->func_table = xmalloc((size_t)image->func_count * sizeof(vm_func_t));
+        memcpy(vm->func_table, image->funcs, (size_t)image->func_count * sizeof(vm_func_t));
+        vm->func_count = image->func_count;
+    } else {
+        vm->func_table = NULL;
+        vm->func_count = 0;
+    }
     ht_init(&vm->modules_loaded);
     vm->env = environ_new(NULL, false);
     vm->laststatus = 0;
@@ -165,6 +173,7 @@ void vm_register_func(vm_t *vm, const char *name, size_t offset)
     vm->func_table = xrealloc(vm->func_table, ((size_t)vm->func_count + 1) * sizeof(vm_func_t));
     vm->func_table[vm->func_count].name = name;
     vm->func_table[vm->func_count].bytecode_offset = offset;
+    vm->func_table[vm->func_count].image = NULL;
     vm->func_count++;
 }
 
@@ -183,9 +192,21 @@ void vm_destroy(vm_t *vm)
         vm->env = parent;
     }
 
+    free(vm->func_table);
     vm->func_table = NULL;
     vm->func_count = 0;
     ht_destroy(&vm->modules_loaded);
+
+    /* Free eval/source sub-images */
+    {
+        int ei;
+        for (ei = 0; ei < vm->eval_image_count; ei++) {
+            image_free(vm->eval_images[ei]);
+        }
+        free(vm->eval_images);
+        vm->eval_images = NULL;
+        vm->eval_image_count = 0;
+    }
 
     free(vm->captured_stdout);
     vm->captured_stdout = NULL;
@@ -239,17 +260,76 @@ int vm_exec_string(vm_t *vm, const char *source, const char *label)
 
     vm_t sub;
     vm_init(&sub, img);
-    /* Share environment and function table with caller */
+    /* Share environment with caller but keep separate func tables.
+     * The sub-VM uses the sub-image's own func table (indices match
+     * the compiled OP_EXEC_FUNC instructions). Parent functions are
+     * accessible via runtime name lookup (OP_EXEC_SIMPLE). */
     environ_destroy(sub.env);
     sub.env = vm->env;
-    sub.func_table = vm->func_table;
-    sub.func_count = vm->func_count;
 
     int status = vm_run(&sub);
 
-    /* Propagate state back to the caller.
-     * Only propagate halted if exit was explicitly called (not just
-     * reaching the end of the code via OP_HALT). */
+    /* After execution, merge new functions into the parent's table.
+     * Tag them with the sub-image pointer for image-swap dispatch. */
+    {
+        int fi;
+        bool has_new_funcs = (sub.func_count > 0);
+        for (fi = 0; fi < sub.func_count; fi++) {
+            /* Check if this function already exists in the parent table */
+            int existing = -1;
+            int pi;
+            for (pi = 0; pi < vm->func_count; pi++) {
+                if (strcmp(vm->func_table[pi].name, sub.func_table[fi].name) == 0) {
+                    existing = pi;
+                    break;
+                }
+            }
+            vm_func_t entry;
+            entry.name = sub.func_table[fi].name;
+            entry.bytecode_offset = sub.func_table[fi].bytecode_offset;
+            entry.image = img;
+
+            if (existing >= 0) {
+                /* Overwrite existing function (redefinition) */
+                vm->func_table[existing].bytecode_offset = entry.bytecode_offset;
+                vm->func_table[existing].image = entry.image;
+            } else {
+                /* Append new function */
+                vm->func_table =
+                    xrealloc(vm->func_table, ((size_t)vm->func_count + 1) * sizeof(vm_func_t));
+                vm->func_table[vm->func_count] = entry;
+                vm->func_count++;
+            }
+        }
+
+        if (has_new_funcs) {
+            if (vm->eval_image_count >= vm->eval_image_cap) {
+                int new_cap = vm->eval_image_cap ? vm->eval_image_cap * 2 : 4;
+                vm->eval_images =
+                    xrealloc(vm->eval_images, (size_t)new_cap * sizeof(bytecode_image_t *));
+                vm->eval_image_cap = new_cap;
+            }
+            vm->eval_images[vm->eval_image_count++] = img;
+            img = NULL; /* ownership transferred */
+        }
+
+        /* Transfer any sub-images from nested eval/source */
+        if (sub.eval_image_count > 0) {
+            int si;
+            for (si = 0; si < sub.eval_image_count; si++) {
+                if (vm->eval_image_count >= vm->eval_image_cap) {
+                    int new_cap = vm->eval_image_cap ? vm->eval_image_cap * 2 : 4;
+                    vm->eval_images =
+                        xrealloc(vm->eval_images, (size_t)new_cap * sizeof(bytecode_image_t *));
+                    vm->eval_image_cap = new_cap;
+                }
+                vm->eval_images[vm->eval_image_count++] = sub.eval_images[si];
+            }
+            sub.eval_image_count = 0;
+        }
+    }
+
+    /* Propagate state back to the caller */
     vm->laststatus = sub.laststatus;
     if (sub.exit_requested) {
         vm->exit_requested = true;
@@ -261,7 +341,9 @@ int vm_exec_string(vm_t *vm, const char *source, const char *label)
 
     sub.env = NULL; /* don't double-free */
     vm_destroy(&sub);
-    image_free(img);
+    if (img != NULL) {
+        image_free(img); /* no functions defined, safe to free */
+    }
 
     return status;
 }
@@ -1312,6 +1394,7 @@ int vm_run(vm_t *vm)
                         vm->env = func_env->parent;
                         environ_destroy(func_env);
                         vm->ip = frame->return_ip;
+                        vm->image = frame->saved_image;
                     } else {
                         /* At top level: halt but keep return_requested
                          * so vm_exec_string can propagate it */
@@ -1382,6 +1465,7 @@ int vm_run(vm_t *vm)
                         frame->saved_env = vm->env;
                         frame->saved_stack_base = vm->stack_top;
                         frame->saved_loop_depth = vm->loop_depth;
+                        frame->saved_image = vm->image;
                         vm->env = environ_new(vm->env, false);
 
                         /* Bind positional parameters */
@@ -1402,6 +1486,8 @@ int vm_run(vm_t *vm)
                         }
                         free(argv);
 
+                        vm->image =
+                            vm->func_table[fi].image ? vm->func_table[fi].image : vm->main_image;
                         vm->ip = vm->func_table[fi].bytecode_offset;
                         exec_is_func = true;
                         goto exec_simple_done;
@@ -1432,6 +1518,7 @@ int vm_run(vm_t *vm)
                             vm->env = func_env->parent;
                             environ_destroy(func_env);
                             vm->ip = frame->return_ip;
+                            vm->image = frame->saved_image;
                         } else {
                             vm->halted = true;
                         }
@@ -1550,6 +1637,7 @@ int vm_run(vm_t *vm)
             frame->saved_env = vm->env;
             frame->saved_stack_base = vm->stack_top;
             frame->saved_loop_depth = vm->loop_depth;
+            frame->saved_image = vm->image;
 
             /* Push a new scope for the function */
             vm->env = environ_new(vm->env, false);
@@ -1572,6 +1660,10 @@ int vm_run(vm_t *vm)
                 value_destroy(&argv[i]);
             }
             free(argv);
+
+            /* Swap to the function's image */
+            vm->image =
+                vm->func_table[func_idx].image ? vm->func_table[func_idx].image : vm->main_image;
 
             /* Jump to function body */
             vm->ip = vm->func_table[func_idx].bytecode_offset;
@@ -1599,8 +1691,9 @@ int vm_run(vm_t *vm)
             vm->env = func_env->parent;
             environ_destroy(func_env);
 
-            /* Restore IP */
+            /* Restore IP and image */
             vm->ip = frame->return_ip;
+            vm->image = frame->saved_image;
             break;
         }
 
