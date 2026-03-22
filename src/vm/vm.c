@@ -1546,8 +1546,9 @@ int vm_run(vm_t *vm)
                         fprintf(stderr, "opsh: fork: %s\n", strerror(errno));
                         vm->laststatus = 126;
                     } else if (pid == 0) {
-                        /* Child: reset signals to defaults */
+                        /* Child: export shell vars to C env, reset signals */
                         signal_reset();
+                        environ_export_to_c(vm->env);
                         execvp(exec_argv[0], exec_argv);
                         /* execvp failed */
                         int err = errno;

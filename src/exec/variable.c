@@ -146,6 +146,53 @@ void environ_export(environ_t *env, const char *name)
     }
 }
 
+struct export_ctx {
+    hashtable_t seen; /* track which names we've already exported */
+};
+
+static int export_var_cb(const char *key, void *value, void *ctx)
+{
+    variable_t *var = value;
+    struct export_ctx *ec = ctx;
+    (void)key;
+
+    if (!(var->flags & (VF_EXPORT | VF_PREFIX))) {
+        return 0;
+    }
+    /* Skip internal shell variables (positional params, special vars) */
+    if (var->name[0] >= '0' && var->name[0] <= '9') {
+        return 0;
+    }
+    if (var->name[0] == '#' || var->name[0] == '?' || var->name[0] == '-') {
+        return 0;
+    }
+    /* Skip if already exported from an inner scope */
+    if (ht_get(&ec->seen, var->name) != NULL) {
+        return 0;
+    }
+    ht_set(&ec->seen, var->name, (void *)1);
+
+    if (var->value.type == VT_STRING) {
+        setenv(var->name, var->value.data.string, 1);
+    }
+    return 0;
+}
+
+void environ_export_to_c(environ_t *env)
+{
+    struct export_ctx ctx;
+    ht_init(&ctx.seen);
+
+    /* Walk innermost-out so inner scopes win */
+    environ_t *scope = env;
+    while (scope != NULL) {
+        ht_foreach(&scope->vars, export_var_cb, &ctx);
+        scope = scope->parent;
+    }
+
+    ht_destroy(&ctx.seen);
+}
+
 void environ_unset(environ_t *env, const char *name)
 {
     while (env != NULL) {

@@ -620,6 +620,11 @@ static void compile_simple(compiler_t *cc, command_t *cmd)
                           is_local_var(cc, cc->image->const_pool[name_idx]) ? OP_SET_LOCAL
                                                                             : OP_SET_VAR);
             image_emit_u16(cc->image, name_idx);
+            /* For prefix assignments, mark the variable for export to child */
+            if (temp_assigns) {
+                image_emit_u8(cc->image, OP_EXPORT);
+                image_emit_u16(cc->image, name_idx);
+            }
         } else {
             compiler_error(cc, cmd->lineno, "assignment with non-string prefix");
         }
