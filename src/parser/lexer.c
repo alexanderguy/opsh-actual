@@ -666,6 +666,15 @@ static word_part_t *parse_word_units(lexer_t *lex, bool in_dquote, bool in_hered
 
         /* Not in double quotes */
         if (!is_word_char(c) && c != '\'' && c != '"' && c != '\\' && c != '$' && c != '`') {
+            /* In regex mode, ( ) | are word characters */
+            if (lex->regex_mode && (c == '(' || c == ')' || c == '|')) {
+                strbuf_append_byte(&literal, c);
+                if (raw) {
+                    strbuf_append_byte(raw, c);
+                }
+                lexer_advance(lex);
+                continue;
+            }
             break;
         }
 
@@ -913,7 +922,7 @@ static token_t lexer_read_token(lexer_t *lex)
     /* Operators */
     c2 = lexer_peek_char(lex, 1);
 
-    if (c == '|') {
+    if (c == '|' && !lex->regex_mode) {
         lexer_advance(lex);
         if (c2 == '|') {
             lexer_advance(lex);
@@ -948,12 +957,12 @@ static token_t lexer_read_token(lexer_t *lex)
         return make_token(TOK_SEMI, lineno);
     }
 
-    if (c == '(') {
+    if (c == '(' && !lex->regex_mode) {
         lexer_advance(lex);
         return make_token(TOK_LPAREN, lineno);
     }
 
-    if (c == ')') {
+    if (c == ')' && !lex->regex_mode) {
         lexer_advance(lex);
         return make_token(TOK_RPAREN, lineno);
     }

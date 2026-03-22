@@ -1317,7 +1317,18 @@ static cond_expr_t *parse_cond_expr_primary(parser_t *p)
         const token_t *maybe_op = peek(p);
         if (maybe_op->value != NULL && is_binary_test_op(maybe_op->value)) {
             token_t op_tok = next(p);
+            /* Enable regex mode for =~ so ( ) | are word characters */
+            bool was_regex = p->lexer.regex_mode;
+            if (op_tok.value != NULL && strcmp(op_tok.value, "=~") == 0) {
+                p->lexer.regex_mode = true;
+                /* Invalidate any cached lookahead so the lexer uses regex mode */
+                if (p->lexer.has_lookahead) {
+                    token_free(&p->lexer.lookahead);
+                    p->lexer.has_lookahead = false;
+                }
+            }
             token_t right_tok = next(p);
+            p->lexer.regex_mode = was_regex;
 
             cond_expr_t *node = xcalloc(1, sizeof(*node));
             node->type = COND_BINARY;
