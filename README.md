@@ -33,7 +33,6 @@ opsh compiles `.opsh` scripts to bytecode and executes them on a stack-based vir
 
 **Known limitations:**
 
-- Functions defined in nested eval reference stale bytecode offsets
 - Capability system and native module API not yet implemented
 
 ## Usage
