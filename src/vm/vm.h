@@ -65,6 +65,7 @@ typedef struct {
     size_t return_ip;
     environ_t *saved_env;
     int saved_stack_base;
+    int saved_loop_depth;
 } call_frame_t;
 
 /*
@@ -108,6 +109,7 @@ typedef struct vm {
     size_t captured_stdout_cap;
 
     bool halted;
+    bool return_requested; /* set by `return` builtin to trigger OP_RET */
 } vm_t;
 
 /* Register a function in the VM (used by the compiler) */

@@ -2,6 +2,7 @@
 
 #include "foundation/util.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -66,6 +67,16 @@ variable_t *environ_get(environ_t *env, const char *name)
     return NULL;
 }
 
+static bool check_readonly(environ_t *env, const char *name)
+{
+    variable_t *var = environ_get(env, name);
+    if (var != NULL && (var->flags & VF_READONLY)) {
+        fprintf(stderr, "opsh: %s: readonly variable\n", name);
+        return true;
+    }
+    return false;
+}
+
 void environ_set(environ_t *env, const char *name, value_t value)
 {
     environ_set_flags(env, name, value, 0);
@@ -75,32 +86,57 @@ void environ_set_flags(environ_t *env, const char *name, value_t value, unsigned
 {
     variable_t *existing = ht_get(&env->vars, name);
     if (existing != NULL) {
+        if (existing->flags & VF_READONLY) {
+            fprintf(stderr, "opsh: %s: readonly variable\n", name);
+            value_destroy(&value);
+            return;
+        }
         value_destroy(&existing->value);
         existing->value = value;
         existing->flags |= flags;
         return;
     }
 
+    /* Check parent scopes for readonly */
+    if (env->parent != NULL && check_readonly(env->parent, name)) {
+        value_destroy(&value);
+        return;
+    }
+
     variable_t *var = variable_new(name, value, flags);
-    /* The hashtable borrows the key pointer; we use var->name which we own */
     ht_set(&env->vars, var->name, var);
 }
 
 void environ_assign(environ_t *env, const char *name, value_t value)
 {
-    /* Walk the scope chain to find an existing variable */
     environ_t *scope = env;
     while (scope != NULL) {
         variable_t *var = ht_get(&scope->vars, name);
         if (var != NULL) {
+            if (var->flags & VF_READONLY) {
+                fprintf(stderr, "opsh: %s: readonly variable\n", name);
+                value_destroy(&value);
+                return;
+            }
             value_destroy(&var->value);
             var->value = value;
             return;
         }
         scope = scope->parent;
     }
-    /* Not found anywhere -- create in the current scope */
     environ_set(env, name, value);
+}
+
+void environ_set_local(environ_t *env, const char *name, value_t value)
+{
+    variable_t *existing = ht_get(&env->vars, name);
+    if (existing != NULL) {
+        value_destroy(&existing->value);
+        existing->value = value;
+        return;
+    }
+    variable_t *var = variable_new(name, value, 0);
+    ht_set(&env->vars, var->name, var);
 }
 
 void environ_export(environ_t *env, const char *name)
@@ -114,8 +150,13 @@ void environ_export(environ_t *env, const char *name)
 void environ_unset(environ_t *env, const char *name)
 {
     while (env != NULL) {
-        variable_t *var = ht_remove(&env->vars, name);
+        variable_t *var = ht_get(&env->vars, name);
         if (var != NULL) {
+            if (var->flags & VF_READONLY) {
+                fprintf(stderr, "opsh: %s: readonly variable\n", name);
+                return;
+            }
+            ht_remove(&env->vars, name);
             variable_free(var);
             return;
         }
