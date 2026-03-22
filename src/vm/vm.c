@@ -820,12 +820,44 @@ int vm_run(vm_t *vm)
                 }
 
                 bool replace_all = (flags & PE_GLOBAL) != 0;
+                bool anchor_head = (flags & PE_PREFIX) != 0;
+                bool anchor_tail = (flags & PE_SUFFIX) != 0;
                 size_t len = strlen(var_val);
                 strbuf_t result;
                 strbuf_init(&result);
                 size_t pos = 0;
 
+                /* For tail anchor, try matching suffix at each start position */
+                if (anchor_tail) {
+                    size_t best_start = len;
+                    size_t ti;
+                    for (ti = 0; ti <= len; ti++) {
+                        if (fnmatch(pat, var_val + ti, 0) == 0) {
+                            best_start = ti;
+                            break; /* first (longest) suffix match */
+                        }
+                    }
+                    if (best_start < len) {
+                        strbuf_append_bytes(&result, var_val, best_start);
+                        strbuf_append_str(&result, rep);
+                        found = true;
+                    } else {
+                        strbuf_append_str(&result, var_val);
+                    }
+                    free(var_val);
+                    free(pat);
+                    free(rep);
+                    vm_push(vm, value_string(strbuf_detach(&result)));
+                    break;
+                }
+
                 while (pos <= len) {
+                    /* Head anchor: only match at position 0 */
+                    if (anchor_head && pos != 0) {
+                        strbuf_append_str(&result, var_val + pos);
+                        break;
+                    }
+
                     /* At each position, find the longest match */
                     bool matched = false;
                     size_t match_end = pos;

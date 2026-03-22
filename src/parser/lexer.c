@@ -234,6 +234,12 @@ static word_part_t *parse_param_expansion(lexer_t *lex)
         if (lexer_char(lex) == '/') {
             pe->flags |= PE_GLOBAL;
             lexer_advance(lex);
+        } else if (lexer_char(lex) == '#') {
+            pe->flags |= PE_PREFIX;
+            lexer_advance(lex);
+        } else if (lexer_char(lex) == '%') {
+            pe->flags |= PE_SUFFIX;
+            lexer_advance(lex);
         }
     } else {
         /* Unexpected character -- bail */
