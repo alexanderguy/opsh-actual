@@ -359,9 +359,123 @@ static void test_negation(void)
     free(out);
 }
 
+static void test_if_command(void)
+{
+    int status;
+    char *out = compile_and_run("if true; then echo yes; fi", &status);
+    tap_is_str(out, "yes\n", "if true: runs body");
+    free(out);
+
+    out = compile_and_run("if false; then echo no; fi", &status);
+    tap_is_str(out, "", "if false: skips body");
+    free(out);
+}
+
+static void test_if_else(void)
+{
+    int status;
+    char *out = compile_and_run("if false; then echo no; else echo yes; fi", &status);
+    tap_is_str(out, "yes\n", "if-else: runs else");
+    free(out);
+
+    out = compile_and_run("if true; then echo yes; else echo no; fi", &status);
+    tap_is_str(out, "yes\n", "if-else: runs then");
+    free(out);
+}
+
+static void test_if_elif(void)
+{
+    int status;
+    char *out =
+        compile_and_run("if false; then echo a; elif true; then echo b; else echo c; fi", &status);
+    tap_is_str(out, "b\n", "if-elif-else: runs elif");
+    free(out);
+}
+
+static void test_for_loop(void)
+{
+    int status;
+    char *out = compile_and_run("for x in a b c; do echo $x; done", &status);
+    tap_is_str(out, "a\nb\nc\n", "for loop: iterates over words");
+    free(out);
+
+    out = compile_and_run("for x in hello; do echo $x; done", &status);
+    tap_is_str(out, "hello\n", "for loop: single word");
+    free(out);
+}
+
+static void test_while_loop(void)
+{
+    int status;
+    /* Simple test: condition immediately false */
+    char *out = compile_and_run("while false; do echo loop; done", &status);
+    tap_is_str(out, "", "while false: never enters loop");
+    free(out);
+}
+
+static void test_until_loop(void)
+{
+    int status;
+    char *out = compile_and_run("until true; do echo loop; done", &status);
+    tap_is_str(out, "", "until true: never enters loop");
+    free(out);
+}
+
+static void test_case_command(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("X=hello; case $X in\nhello) echo matched;;\n*) echo default;;\nesac",
+                          &status);
+    tap_is_str(out, "matched\n", "case: exact match");
+    free(out);
+
+    out =
+        compile_and_run("X=other; case $X in\nhello) echo no;;\n*) echo default;;\nesac", &status);
+    tap_is_str(out, "default\n", "case: glob fallthrough to *");
+    free(out);
+}
+
+static void test_brace_group(void)
+{
+    int status;
+    char *out = compile_and_run("{ echo hello; echo world; }", &status);
+    tap_is_str(out, "hello\nworld\n", "brace group: runs both commands");
+    free(out);
+}
+
+static void test_function_def(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("greet() { echo hello; }; greet", &status);
+    tap_is_str(out, "hello\n", "function: define and call");
+    free(out);
+
+    out = compile_and_run("add() { echo done; }\nadd\nadd", &status);
+    tap_is_str(out, "done\ndone\n", "function: call twice");
+    free(out);
+}
+
+static void test_nested_control(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("for x in a b; do if true; then echo $x; fi; done", &status);
+    tap_is_str(out, "a\nb\n", "nested: for + if");
+    free(out);
+
+    out = compile_and_run("if true; then for x in 1 2; do echo $x; done; fi", &status);
+    tap_is_str(out, "1\n2\n", "nested: if + for");
+    free(out);
+}
+
 int main(void)
 {
-    tap_plan(48);
+    tap_plan(64);
 
     test_echo_hello_world();
     test_echo_single_word();
@@ -389,6 +503,16 @@ int main(void)
     test_and_or_chain();
     test_and_or_status();
     test_negation();
+    test_if_command();
+    test_if_else();
+    test_if_elif();
+    test_for_loop();
+    test_while_loop();
+    test_until_loop();
+    test_case_command();
+    test_brace_group();
+    test_function_def();
+    test_nested_control();
 
     return tap_done();
 }
