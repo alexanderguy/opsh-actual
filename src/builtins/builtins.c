@@ -78,14 +78,6 @@ static int builtin_false(vm_t *vm, int argc, value_t *argv)
     return 1;
 }
 
-static int builtin_colon(vm_t *vm, int argc, value_t *argv)
-{
-    (void)vm;
-    (void)argc;
-    (void)argv;
-    return 0;
-}
-
 static int builtin_cd(vm_t *vm, int argc, value_t *argv)
 {
     const char *dir = NULL;
@@ -693,16 +685,14 @@ static int builtin_trap(vm_t *vm, int argc, value_t *argv)
             if (strcmp(action, "-") == 0) {
                 vm->exit_trap = NULL;
             } else {
-                vm->exit_trap = xmalloc(strlen(action) + 1);
-                strcpy(vm->exit_trap, action);
+                vm->exit_trap = xstrdup(action);
             }
         } else if (signum < 32) {
             free(vm->trap_handlers[signum]);
             if (strcmp(action, "-") == 0) {
                 vm->trap_handlers[signum] = NULL;
             } else {
-                vm->trap_handlers[signum] = xmalloc(strlen(action) + 1);
-                strcpy(vm->trap_handlers[signum], action);
+                vm->trap_handlers[signum] = xstrdup(action);
             }
         }
         rcstr_release(signame);
@@ -715,7 +705,7 @@ static int builtin_trap(vm_t *vm, int argc, value_t *argv)
 const builtin_entry_t builtin_table[] = {
     {"echo", builtin_echo},     {"exit", builtin_exit},
     {"true", builtin_true},     {"false", builtin_false},
-    {":", builtin_colon},       {"cd", builtin_cd},
+    {":", builtin_true},        {"cd", builtin_cd},
     {"pwd", builtin_pwd},       {"export", builtin_export},
     {"unset", builtin_unset},   {"readonly", builtin_readonly},
     {"local", builtin_local},   {"shift", builtin_shift},

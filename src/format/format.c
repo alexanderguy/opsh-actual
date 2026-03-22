@@ -718,41 +718,6 @@ void format_ast(strbuf_t *out, const sh_list_t *ast, const comment_t *comments,
     emit_remaining_comments(&f);
 }
 
-/*
- * CLI helpers
- */
-static char *read_file(const char *path)
-{
-    FILE *f = fopen(path, "r");
-    if (f == NULL) {
-        return NULL;
-    }
-    fseek(f, 0, SEEK_END);
-    long len = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (len < 0) {
-        fclose(f);
-        return NULL;
-    }
-    char *buf = xmalloc((size_t)len + 1);
-    size_t nread = fread(buf, 1, (size_t)len, f);
-    buf[nread] = '\0';
-    fclose(f);
-    return buf;
-}
-
-static char *read_stdin(void)
-{
-    strbuf_t buf;
-    strbuf_init(&buf);
-    char tmp[4096];
-    size_t n;
-    while ((n = fread(tmp, 1, sizeof(tmp), stdin)) > 0) {
-        strbuf_append_bytes(&buf, tmp, n);
-    }
-    return strbuf_detach(&buf);
-}
-
 /* Format a single source string. Returns formatted string (caller frees), or NULL on parse error.
  */
 static char *format_source(const char *source, const char *filename, const format_options_t *opts)

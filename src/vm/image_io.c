@@ -308,8 +308,7 @@ bytecode_image_t *image_read_opsb(FILE *in)
                         break;
                     }
                     if (name_idx < img->const_count) {
-                        char *name = xmalloc(strlen(img->const_pool[name_idx]) + 1);
-                        strcpy(name, img->const_pool[name_idx]);
+                        char *name = xstrdup(img->const_pool[name_idx]);
                         img->funcs[fi].name = name;
                     } else {
                         char *name = xmalloc(1);
@@ -346,8 +345,7 @@ bytecode_image_t *image_read_opsb(FILE *in)
                         break;
                     }
                     if (name_idx < img->const_count) {
-                        char *name = xmalloc(strlen(img->const_pool[name_idx]) + 1);
-                        strcpy(name, img->const_pool[name_idx]);
+                        char *name = xstrdup(img->const_pool[name_idx]);
                         img->modules[mi].name = name;
                     } else {
                         char *name = xmalloc(1);

@@ -7,6 +7,13 @@
 void *xmalloc(size_t size);
 void *xrealloc(void *ptr, size_t size);
 void *xcalloc(size_t count, size_t size);
+char *xstrdup(const char *s);
+
+/* Read entire file into a malloc'd string. Returns NULL on failure. */
+char *read_file(const char *path);
+
+/* Read all of stdin into a malloc'd string. */
+char *read_stdin(void);
 
 /* Overflow-safe arithmetic -- returns 0 on success, -1 on overflow */
 int checked_add(size_t a, size_t b, size_t *result);

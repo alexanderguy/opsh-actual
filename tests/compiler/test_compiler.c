@@ -552,24 +552,6 @@ static void test_negated_pipeline(void)
     free(out);
 }
 
-static char *read_file(const char *path)
-{
-    FILE *f = fopen(path, "r");
-    if (!f) {
-        return NULL;
-    }
-    fseek(f, 0, SEEK_END);
-    long len = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *buf = malloc((size_t)len + 1);
-    if (len > 0) {
-        fread(buf, 1, (size_t)len, f);
-    }
-    buf[len] = '\0';
-    fclose(f);
-    return buf;
-}
-
 static void test_output_redirection(void)
 {
     int status;
