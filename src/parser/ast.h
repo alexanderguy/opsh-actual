@@ -18,6 +18,17 @@ typedef struct param_exp param_exp_t;
 typedef struct io_redir io_redir_t;
 typedef struct cond_expr cond_expr_t;
 typedef struct case_item case_item_t;
+typedef struct comment comment_t;
+
+/*
+ * Source comment (linked list, ordered by line number).
+ * Collected during lexing and passed alongside the AST for use by the formatter.
+ */
+struct comment {
+    char *text;          /* comment text including the leading # */
+    unsigned int lineno; /* source line number */
+    comment_t *next;
+};
 
 /*
  * Embedded command: either pre-parsed or unparsed backtick form.
@@ -269,5 +280,6 @@ void param_exp_free(param_exp_t *p);
 void case_item_free(case_item_t *ci);
 void if_clause_free(if_clause_t *ic);
 void cmd_subst_free(cmd_subst_t *ec);
+void comment_free(comment_t *c);
 
 #endif /* OPSH_PARSER_AST_H */

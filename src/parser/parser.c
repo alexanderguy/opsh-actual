@@ -1178,3 +1178,11 @@ int parser_error_count(const parser_t *p)
 {
     return p->error_count + p->lexer.error_count;
 }
+
+comment_t *parser_take_comments(parser_t *p)
+{
+    comment_t *comments = p->lexer.comments;
+    p->lexer.comments = NULL;
+    p->lexer.comments_tail = &p->lexer.comments;
+    return comments;
+}

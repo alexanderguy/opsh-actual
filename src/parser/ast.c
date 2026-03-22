@@ -2,6 +2,16 @@
 
 #include <stdlib.h>
 
+void comment_free(comment_t *c)
+{
+    while (c != NULL) {
+        comment_t *next = c->next;
+        free(c->text);
+        free(c);
+        c = next;
+    }
+}
+
 void param_exp_free(param_exp_t *p)
 {
     if (p == NULL) {
