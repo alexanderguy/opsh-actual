@@ -269,9 +269,99 @@ static void test_arithmetic(void)
     free(out);
 }
 
+static void test_and_if(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("true && echo yes", &status);
+    tap_is_str(out, "yes\n", "&&: runs second when first succeeds");
+    free(out);
+
+    out = compile_and_run("false && echo no", &status);
+    tap_is_str(out, "", "&&: skips second when first fails");
+    free(out);
+}
+
+static void test_or_if(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("false || echo fallback", &status);
+    tap_is_str(out, "fallback\n", "||: runs second when first fails");
+    free(out);
+
+    out = compile_and_run("true || echo no", &status);
+    tap_is_str(out, "", "||: skips second when first succeeds");
+    free(out);
+}
+
+static void test_and_or_chain(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("true && echo a && echo b", &status);
+    tap_is_str(out, "a\nb\n", "&& chain: both run on success");
+    free(out);
+
+    out = compile_and_run("false && echo a || echo b", &status);
+    tap_is_str(out, "b\n", "&& || mix: falls through to ||");
+    free(out);
+
+    out = compile_and_run("true && false || echo c", &status);
+    tap_is_str(out, "c\n", "&& || mix: second fails, || catches");
+    free(out);
+}
+
+static void test_and_or_status(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("true && true", &status);
+    tap_is_int(status, 0, "&& status: 0 when both succeed");
+    free(out);
+
+    out = compile_and_run("true && false", &status);
+    tap_is_int(status, 1, "&& status: 1 when second fails");
+    free(out);
+
+    out = compile_and_run("false || true", &status);
+    tap_is_int(status, 0, "|| status: 0 when second succeeds");
+    free(out);
+
+    out = compile_and_run("false || false", &status);
+    tap_is_int(status, 1, "|| status: 1 when both fail");
+    free(out);
+}
+
+static void test_negation(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("! true", &status);
+    tap_is_int(status, 1, "! true: status 1");
+    free(out);
+
+    out = compile_and_run("! false", &status);
+    tap_is_int(status, 0, "! false: status 0");
+    free(out);
+
+    out = compile_and_run("! true && echo no", &status);
+    tap_is_str(out, "", "! true &&: skips (negated success = failure)");
+    free(out);
+
+    out = compile_and_run("! false && echo yes", &status);
+    tap_is_str(out, "yes\n", "! false &&: runs (negated failure = success)");
+    free(out);
+}
+
 int main(void)
 {
-    tap_plan(33);
+    tap_plan(48);
 
     test_echo_hello_world();
     test_echo_single_word();
@@ -294,6 +384,11 @@ int main(void)
     test_param_length();
     test_special_question();
     test_arithmetic();
+    test_and_if();
+    test_or_if();
+    test_and_or_chain();
+    test_and_or_status();
+    test_negation();
 
     return tap_done();
 }

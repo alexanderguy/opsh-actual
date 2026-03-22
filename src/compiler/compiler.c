@@ -326,6 +326,32 @@ static void compile_command(compiler_t *cc, command_t *cmd)
     }
 }
 
+/*
+ * Emit a jump instruction with a placeholder offset.
+ * Returns the offset of the i32 operand for later backpatching.
+ */
+static size_t emit_jump(compiler_t *cc, opcode_t op)
+{
+    size_t patch_pos;
+    image_emit_u8(cc->image, (uint8_t)op);
+    patch_pos = cc->image->code_size;
+    image_emit_i32(cc->image, 0); /* placeholder */
+    return patch_pos;
+}
+
+/*
+ * Backpatch a jump instruction to target the current code position.
+ */
+static void patch_jump(compiler_t *cc, size_t patch_pos)
+{
+    size_t target = cc->image->code_size;
+    int32_t offset = (int32_t)((int64_t)target - (int64_t)(patch_pos + 4));
+    cc->image->code[patch_pos] = (uint8_t)(offset & 0xFF);
+    cc->image->code[patch_pos + 1] = (uint8_t)((offset >> 8) & 0xFF);
+    cc->image->code[patch_pos + 2] = (uint8_t)((offset >> 16) & 0xFF);
+    cc->image->code[patch_pos + 3] = (uint8_t)((offset >> 24) & 0xFF);
+}
+
 static void compile_and_or(compiler_t *cc, and_or_t *pl)
 {
     if (pl->commands == NULL) {
@@ -337,19 +363,37 @@ static void compile_and_or(compiler_t *cc, and_or_t *pl)
         return;
     }
     compile_command(cc, pl->commands);
+
+    /* ! prefix negates the exit status */
+    if (pl->negated) {
+        image_emit_u8(cc->image, OP_NEGATE_STATUS);
+    }
 }
 
 static void compile_sh_list(compiler_t *cc, sh_list_t *ao)
 {
+    and_or_t *pl;
+
     if (ao->pipelines == NULL) {
         return;
     }
-    if (ao->pipelines->next != NULL) {
-        compiler_error(cc, ao->pipelines->commands->lineno,
-                       "&& / || not yet supported by compiler");
-        return;
-    }
+
+    /* Compile first pipeline */
     compile_and_or(cc, ao->pipelines);
+
+    /* For each subsequent pipeline, emit conditional jump */
+    for (pl = ao->pipelines; pl->next != NULL; pl = pl->next) {
+        size_t patch;
+        if (pl->connector) {
+            /* && : skip next pipeline if last command failed */
+            patch = emit_jump(cc, OP_JMP_FALSE);
+        } else {
+            /* || : skip next pipeline if last command succeeded */
+            patch = emit_jump(cc, OP_JMP_TRUE);
+        }
+        compile_and_or(cc, pl->next);
+        patch_jump(cc, patch);
+    }
 }
 
 static void compile_program(compiler_t *cc, sh_list_t *program)
