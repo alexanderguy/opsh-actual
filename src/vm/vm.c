@@ -35,6 +35,13 @@ void image_free(bytecode_image_t *img)
     }
     free(img->const_pool);
     free(img->code);
+    {
+        int fi;
+        for (fi = 0; fi < img->func_count; fi++) {
+            free((void *)img->funcs[fi].name);
+        }
+        free(img->funcs);
+    }
     free(img);
 }
 
@@ -124,9 +131,21 @@ void vm_init(vm_t *vm, bytecode_image_t *image)
     vm->image = image;
     vm->ip = 0;
     vm->stack_top = 0;
+    vm->call_depth = 0;
+    vm->loop_depth = 0;
+    vm->func_table = image ? image->funcs : NULL;
+    vm->func_count = image ? image->func_count : 0;
     vm->env = environ_new(NULL, false);
     vm->laststatus = 0;
     vm->halted = false;
+}
+
+void vm_register_func(vm_t *vm, const char *name, size_t offset)
+{
+    vm->func_table = xrealloc(vm->func_table, ((size_t)vm->func_count + 1) * sizeof(vm_func_t));
+    vm->func_table[vm->func_count].name = name;
+    vm->func_table[vm->func_count].bytecode_offset = offset;
+    vm->func_count++;
 }
 
 void vm_destroy(vm_t *vm)
@@ -143,6 +162,9 @@ void vm_destroy(vm_t *vm)
         environ_destroy(vm->env);
         vm->env = parent;
     }
+
+    vm->func_table = NULL;
+    vm->func_count = 0;
 
     free(vm->captured_stdout);
     vm->captured_stdout = NULL;
@@ -634,7 +656,7 @@ int vm_run(vm_t *vm)
             uint16_t name_idx = read_u16(vm);
             const char *name = vm->image->const_pool[name_idx];
             value_t val = vm_pop(vm);
-            environ_set(vm->env, name, val);
+            environ_assign(vm->env, name, val);
             break;
         }
 
@@ -707,9 +729,253 @@ int vm_run(vm_t *vm)
             break;
         }
 
+        case OP_EXEC_SIMPLE: {
+            uint8_t flags = read_u8(vm);
+            (void)flags;
+
+            /* Pop argc and arguments */
+            value_t argc_val = vm_pop(vm);
+            int argc = (int)value_to_integer(&argc_val);
+            value_destroy(&argc_val);
+
+            value_t *argv = xcalloc(argc ? (size_t)argc : 1, sizeof(value_t));
+            int i;
+            for (i = argc - 1; i >= 0; i--) {
+                argv[i] = vm_pop(vm);
+            }
+
+            /* Try runtime function lookup first */
+            if (argc > 0) {
+                char *cmd_name = value_to_string(&argv[0]);
+                int fi;
+                for (fi = 0; fi < vm->func_count; fi++) {
+                    if (strcmp(vm->func_table[fi].name, cmd_name) == 0) {
+                        rcstr_release(cmd_name);
+
+                        /* Push call frame */
+                        if (vm->call_depth >= VM_CALL_STACK_MAX) {
+                            fprintf(stderr, "opsh: call stack overflow\n");
+                            vm->laststatus = 1;
+                            vm->halted = true;
+                            for (i = 0; i < argc; i++) {
+                                value_destroy(&argv[i]);
+                            }
+                            free(argv);
+                            goto exec_simple_done;
+                        }
+                        call_frame_t *frame = &vm->call_stack[vm->call_depth++];
+                        frame->return_ip = vm->ip;
+                        frame->saved_env = vm->env;
+                        frame->saved_stack_base = vm->stack_top;
+                        vm->env = environ_new(vm->env, false);
+
+                        /* Bind positional parameters */
+                        for (i = 1; i < argc; i++) {
+                            char param_name[16];
+                            snprintf(param_name, sizeof(param_name), "%d", i);
+                            environ_set(vm->env, param_name, argv[i]);
+                            argv[i] = value_none();
+                        }
+                        {
+                            char count_str[16];
+                            snprintf(count_str, sizeof(count_str), "%d", argc > 0 ? argc - 1 : 0);
+                            environ_set(vm->env, "#", value_string(rcstr_new(count_str)));
+                        }
+
+                        for (i = 0; i < argc; i++) {
+                            value_destroy(&argv[i]);
+                        }
+                        free(argv);
+
+                        vm->ip = vm->func_table[fi].bytecode_offset;
+                        goto exec_simple_done;
+                    }
+                }
+
+                /* Also try builtins at runtime */
+                int bi = builtin_lookup(cmd_name);
+                if (bi >= 0) {
+                    rcstr_release(cmd_name);
+                    int status = builtin_table[bi].fn(vm, argc, argv);
+                    vm->laststatus = status;
+                    if (strcmp(builtin_table[bi].name, "exit") == 0) {
+                        vm->halted = true;
+                    }
+                    for (i = 0; i < argc; i++) {
+                        value_destroy(&argv[i]);
+                    }
+                    free(argv);
+                    goto exec_simple_done;
+                }
+
+                fprintf(stderr, "opsh: %s: command not found\n", cmd_name);
+                rcstr_release(cmd_name);
+            }
+
+            vm->laststatus = 127;
+            for (i = 0; i < argc; i++) {
+                value_destroy(&argv[i]);
+            }
+            free(argv);
+        exec_simple_done:
+            break;
+        }
+
+        case OP_EXEC_FUNC: {
+            uint16_t func_idx = read_u16(vm);
+
+            /* Pop argc from stack */
+            value_t argc_val = vm_pop(vm);
+            int argc = (int)value_to_integer(&argc_val);
+            value_destroy(&argc_val);
+
+            /* Pop arguments */
+            value_t *argv = xcalloc(argc ? (size_t)argc : 1, sizeof(value_t));
+            int i;
+            for (i = argc - 1; i >= 0; i--) {
+                argv[i] = vm_pop(vm);
+            }
+
+            if (func_idx >= (uint16_t)vm->func_count) {
+                fprintf(stderr, "opsh: unknown function index %u\n", func_idx);
+                vm->laststatus = 127;
+                for (i = 0; i < argc; i++) {
+                    value_destroy(&argv[i]);
+                }
+                free(argv);
+                break;
+            }
+
+            /* Push call frame */
+            if (vm->call_depth >= VM_CALL_STACK_MAX) {
+                fprintf(stderr, "opsh: call stack overflow\n");
+                vm->laststatus = 1;
+                vm->halted = true;
+                for (i = 0; i < argc; i++) {
+                    value_destroy(&argv[i]);
+                }
+                free(argv);
+                break;
+            }
+            call_frame_t *frame = &vm->call_stack[vm->call_depth++];
+            frame->return_ip = vm->ip;
+            frame->saved_env = vm->env;
+            frame->saved_stack_base = vm->stack_top;
+
+            /* Push a new scope for the function */
+            vm->env = environ_new(vm->env, false);
+
+            /* Bind positional parameters: $1..$N (skip argv[0] which is the name) */
+            for (i = 1; i < argc; i++) {
+                char param_name[16];
+                snprintf(param_name, sizeof(param_name), "%d", i);
+                environ_set(vm->env, param_name, argv[i]);
+                argv[i] = value_none(); /* ownership transferred */
+            }
+            /* Set $# (argument count, excluding function name) */
+            {
+                char count_str[16];
+                snprintf(count_str, sizeof(count_str), "%d", argc > 0 ? argc - 1 : 0);
+                environ_set(vm->env, "#", value_string(rcstr_new(count_str)));
+            }
+
+            for (i = 0; i < argc; i++) {
+                value_destroy(&argv[i]);
+            }
+            free(argv);
+
+            /* Jump to function body */
+            vm->ip = vm->func_table[func_idx].bytecode_offset;
+            break;
+        }
+
+        case OP_RET: {
+            if (vm->call_depth <= 0) {
+                vm->halted = true;
+                break;
+            }
+            call_frame_t *frame = &vm->call_stack[--vm->call_depth];
+
+            /* Clean up any extra values left on the stack by the function */
+            while (vm->stack_top > frame->saved_stack_base) {
+                value_t v = vm_pop(vm);
+                value_destroy(&v);
+            }
+
+            /* Pop function scope */
+            environ_t *func_env = vm->env;
+            vm->env = func_env->parent;
+            environ_destroy(func_env);
+
+            /* Restore IP */
+            vm->ip = frame->return_ip;
+            break;
+        }
+
+        case OP_LOOP_ENTER:
+            /* Recorded by the compiler via jump targets; VM tracks for break */
+            if (vm->loop_depth >= VM_LOOP_STACK_MAX) {
+                fprintf(stderr, "opsh: loop nesting too deep\n");
+                vm->laststatus = 1;
+                vm->halted = true;
+                break;
+            }
+            vm->loop_stack[vm->loop_depth].saved_stack_top = vm->stack_top;
+            vm->loop_depth++;
+            break;
+
+        case OP_LOOP_EXIT:
+            if (vm->loop_depth > 0) {
+                vm->loop_depth--;
+            }
+            break;
+
         case OP_NEGATE_STATUS:
             vm->laststatus = (vm->laststatus == 0) ? 1 : 0;
             break;
+
+        case OP_PATTERN_MATCH: {
+            value_t pattern_val = vm_pop(vm);
+            value_t subject_val = vm_pop(vm);
+            char *pattern = value_to_string(&pattern_val);
+            char *subject = value_to_string(&subject_val);
+            value_destroy(&pattern_val);
+            value_destroy(&subject_val);
+
+            /* Simple glob matching: * matches anything, ? matches one char */
+            vm->laststatus = 1; /* assume no match */
+            {
+                const char *p = pattern;
+                const char *s = subject;
+                const char *star_p = NULL;
+                const char *star_s = NULL;
+
+                while (*s) {
+                    if (*p == '*') {
+                        star_p = p++;
+                        star_s = s;
+                    } else if (*p == '?' || *p == *s) {
+                        p++;
+                        s++;
+                    } else if (star_p != NULL) {
+                        p = star_p + 1;
+                        s = ++star_s;
+                    } else {
+                        break;
+                    }
+                }
+                while (*p == '*') {
+                    p++;
+                }
+                if (*p == '\0' && *s == '\0') {
+                    vm->laststatus = 0; /* match */
+                }
+            }
+
+            rcstr_release(pattern);
+            rcstr_release(subject);
+            break;
+        }
 
         case OP_REDIR_SAVE:
         case OP_REDIR_RESTORE:

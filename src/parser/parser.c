@@ -91,6 +91,36 @@ static bool is_command_start(token_type_t type)
     }
 }
 
+/* Check if a token type is a reserved word that can appear as a command argument.
+ * After the first word in a simple command, reserved words are regular words. */
+static bool is_word_token(token_type_t type)
+{
+    switch (type) {
+    case TOK_IF:
+    case TOK_THEN:
+    case TOK_ELSE:
+    case TOK_ELIF:
+    case TOK_FI:
+    case TOK_DO:
+    case TOK_DONE:
+    case TOK_CASE:
+    case TOK_ESAC:
+    case TOK_WHILE:
+    case TOK_UNTIL:
+    case TOK_FOR:
+    case TOK_IN:
+    case TOK_FUNCTION:
+    case TOK_BANG:
+    case TOK_DBRACK_OPEN:
+    case TOK_DBRACK_CLOSE:
+    case TOK_LBRACE:
+    case TOK_RBRACE:
+        return true;
+    default:
+        return false;
+    }
+}
+
 /* Check if token is a redirection operator */
 static bool is_redir_op(token_type_t type)
 {
@@ -428,7 +458,8 @@ static command_t *parse_simple_command(parser_t *p)
     }
 
     while (peek(p)->type == TOK_ASSIGNMENT || peek(p)->type == TOK_WORD ||
-           peek(p)->type == TOK_IO_NUMBER || is_redir_op(peek(p)->type)) {
+           peek(p)->type == TOK_IO_NUMBER || is_redir_op(peek(p)->type) ||
+           (has_words && is_word_token(peek(p)->type))) {
 
         if (is_redir_op(peek(p)->type) || peek(p)->type == TOK_IO_NUMBER) {
             parse_redirections(p, redir_tail);

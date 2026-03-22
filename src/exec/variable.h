@@ -46,6 +46,11 @@ variable_t *environ_get(environ_t *env, const char *name);
  * Takes ownership of the value. */
 void environ_set(environ_t *env, const char *name, value_t value);
 
+/* Set a variable, walking the scope chain to find an existing definition.
+ * If found in a parent scope, modifies it there. Otherwise creates in
+ * the current scope. This is the POSIX assignment behavior. */
+void environ_assign(environ_t *env, const char *name, value_t value);
+
 /* Set a variable in the current scope with specific flags. */
 void environ_set_flags(environ_t *env, const char *name, value_t value, unsigned int flags);
 

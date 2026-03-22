@@ -13,6 +13,14 @@
 #define VM_CONST_POOL_MAX 65535
 
 /*
+ * Function table entry.
+ */
+typedef struct {
+    const char *name; /* owned by the image */
+    size_t bytecode_offset;
+} vm_func_t;
+
+/*
  * Bytecode image: constant pool + bytecode segments.
  */
 typedef struct {
@@ -23,7 +31,32 @@ typedef struct {
     uint8_t *code; /* bytecode */
     size_t code_size;
     size_t code_cap; /* allocated capacity */
+
+    /* Function table (compiled functions) */
+    vm_func_t *funcs;
+    int func_count;
 } bytecode_image_t;
+
+#define VM_CALL_STACK_MAX 256
+#define VM_LOOP_STACK_MAX 64
+
+/*
+ * Call frame for function calls.
+ */
+typedef struct {
+    size_t return_ip;
+    environ_t *saved_env;
+    int saved_stack_base;
+} call_frame_t;
+
+/*
+ * Loop frame for break/continue.
+ */
+typedef struct {
+    size_t continue_ip;  /* jump here for continue */
+    size_t break_ip;     /* jump here for break */
+    int saved_stack_top; /* stack depth at loop entry */
+} loop_frame_t;
 
 /*
  * VM state.
@@ -34,6 +67,15 @@ typedef struct vm {
 
     value_t stack[VM_STACK_MAX];
     int stack_top; /* index of next free slot */
+
+    call_frame_t call_stack[VM_CALL_STACK_MAX];
+    int call_depth;
+
+    loop_frame_t loop_stack[VM_LOOP_STACK_MAX];
+    int loop_depth;
+
+    vm_func_t *func_table; /* function registry (owned) */
+    int func_count;
 
     environ_t *env; /* current variable scope */
 
@@ -46,6 +88,9 @@ typedef struct vm {
 
     bool halted;
 } vm_t;
+
+/* Register a function in the VM (used by the compiler) */
+void vm_register_func(vm_t *vm, const char *name, size_t offset);
 
 /* Initialize a VM with a bytecode image */
 void vm_init(vm_t *vm, bytecode_image_t *image);
