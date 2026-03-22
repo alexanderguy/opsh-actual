@@ -25,6 +25,8 @@ typedef enum {
     /* Variable operations */
     OP_GET_VAR = 0x10,        /* u16 name_idx -> push value */
     OP_SET_VAR = 0x11,        /* u16 name_idx; value -> */
+    OP_GET_LOCAL = 0x19,      /* u16 name_idx -> push value (current scope only) */
+    OP_SET_LOCAL = 0x1A,      /* u16 name_idx; value -> (current scope only) */
     OP_GET_ARRAY = 0x12,      /* u16 name_idx; index -> value */
     OP_SET_ARRAY = 0x13,      /* u16 name_idx; value index -> */
     OP_SET_ARRAY_BULK = 0x14, /* u16 name_idx, u16 count; vals -> */
@@ -110,6 +112,8 @@ static inline int opcode_operand_size(opcode_t op)
     case OP_PUSH_CONST:
     case OP_GET_VAR:
     case OP_SET_VAR:
+    case OP_GET_LOCAL:
+    case OP_SET_LOCAL:
     case OP_GET_ARRAY:
     case OP_SET_ARRAY:
     case OP_EXPORT:

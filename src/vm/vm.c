@@ -1,5 +1,6 @@
 #include "vm/vm.h"
 
+#include "builtins/builtins.h"
 #include "foundation/rcstr.h"
 #include "foundation/strbuf.h"
 #include "foundation/util.h"
@@ -122,6 +123,7 @@ void vm_init(vm_t *vm, bytecode_image_t *image)
     vm->image = image;
     vm->ip = 0;
     vm->stack_top = 0;
+    vm->env = environ_new(NULL, false);
     vm->laststatus = 0;
     vm->halted = false;
 }
@@ -133,6 +135,14 @@ void vm_destroy(vm_t *vm)
         value_destroy(&vm->stack[i]);
     }
     vm->stack_top = 0;
+
+    /* Free all scopes */
+    while (vm->env != NULL) {
+        environ_t *parent = vm->env->parent;
+        environ_destroy(vm->env);
+        vm->env = parent;
+    }
+
     free(vm->captured_stdout);
     vm->captured_stdout = NULL;
 }
@@ -188,57 +198,6 @@ static int32_t read_i32(vm_t *vm)
     uint32_t b2 = read_u8(vm);
     uint32_t b3 = read_u8(vm);
     return (int32_t)(b0 | (b1 << 8) | (b2 << 16) | (b3 << 24));
-}
-
-/*
- * Builtin: echo
- */
-static void builtin_echo(vm_t *vm, int argc, value_t *argv)
-{
-    int i;
-    strbuf_t out;
-    strbuf_init(&out);
-
-    /* argv[0] is "echo", argv[1..argc-1] are arguments */
-    for (i = 1; i < argc; i++) {
-        char *s = value_to_string(&argv[i]);
-        if (i > 1) {
-            strbuf_append_byte(&out, ' ');
-        }
-        strbuf_append_str(&out, s);
-        rcstr_release(s);
-    }
-    strbuf_append_byte(&out, '\n');
-
-    if (vm->captured_stdout != NULL) {
-        /* Capture mode: append to buffer */
-        size_t needed = vm->captured_stdout_len + out.length;
-        if (needed >= vm->captured_stdout_cap) {
-            vm->captured_stdout_cap = needed * 2 + 64;
-            vm->captured_stdout = xrealloc(vm->captured_stdout, vm->captured_stdout_cap);
-        }
-        memcpy(vm->captured_stdout + vm->captured_stdout_len, out.contents, out.length);
-        vm->captured_stdout_len += out.length;
-        vm->captured_stdout[vm->captured_stdout_len] = '\0';
-    } else {
-        fputs(out.contents, stdout);
-    }
-
-    strbuf_destroy(&out);
-    vm->laststatus = 0;
-}
-
-/*
- * Builtin: exit
- */
-static void builtin_exit(vm_t *vm, int argc, value_t *argv)
-{
-    int code = 0;
-    if (argc > 1) {
-        code = (int)value_to_integer(&argv[1]);
-    }
-    vm->laststatus = code;
-    vm->halted = true;
 }
 
 static void vm_jump(vm_t *vm, int32_t offset)
@@ -437,6 +396,80 @@ int vm_run(vm_t *vm)
             break;
         }
 
+        case OP_GET_VAR: {
+            uint16_t name_idx = read_u16(vm);
+            const char *name = vm->image->const_pool[name_idx];
+            variable_t *var = environ_get(vm->env, name);
+            if (var != NULL) {
+                vm_push(vm, value_clone(&var->value));
+            } else {
+                /* Unset variable: push empty string */
+                vm_push(vm, value_string(rcstr_new("")));
+            }
+            break;
+        }
+
+        case OP_GET_LOCAL: {
+            uint16_t name_idx = read_u16(vm);
+            const char *name = vm->image->const_pool[name_idx];
+            variable_t *var = ht_get(&vm->env->vars, name);
+            if (var != NULL) {
+                vm_push(vm, value_clone(&var->value));
+            } else {
+                /* Fall back to full chain walk */
+                var = environ_get(vm->env, name);
+                if (var != NULL) {
+                    vm_push(vm, value_clone(&var->value));
+                } else {
+                    vm_push(vm, value_string(rcstr_new("")));
+                }
+            }
+            break;
+        }
+
+        case OP_SET_VAR: {
+            uint16_t name_idx = read_u16(vm);
+            const char *name = vm->image->const_pool[name_idx];
+            value_t val = vm_pop(vm);
+            environ_set(vm->env, name, val);
+            break;
+        }
+
+        case OP_SET_LOCAL: {
+            uint16_t name_idx = read_u16(vm);
+            const char *name = vm->image->const_pool[name_idx];
+            value_t val = vm_pop(vm);
+            environ_set(vm->env, name, val);
+            break;
+        }
+
+        case OP_PUSH_SCOPE: {
+            uint8_t flags = read_u8(vm);
+            bool is_temp = (flags & 1) != 0;
+            vm->env = environ_new(vm->env, is_temp);
+            break;
+        }
+
+        case OP_POP_SCOPE: {
+            if (vm->env->parent == NULL) {
+                fprintf(stderr, "opsh: cannot pop global scope\n");
+                vm->laststatus = 1;
+                vm->halted = true;
+                break;
+            }
+            environ_t *old = vm->env;
+            vm->env = old->parent;
+            environ_destroy(old);
+            break;
+        }
+
+        case OP_EXPORT: {
+            uint16_t name_idx = read_u16(vm);
+            const char *name = vm->image->const_pool[name_idx];
+            environ_export(vm->env, name);
+            break;
+        }
+
         case OP_EXEC_BUILTIN: {
             uint16_t builtin_idx = read_u16(vm);
 
@@ -446,23 +479,22 @@ int vm_run(vm_t *vm)
             value_destroy(&argc_val);
 
             /* Pop argc arguments */
-            value_t *argv = xmalloc((size_t)argc * sizeof(value_t));
+            value_t *argv = xcalloc(argc ? (size_t)argc : 1, sizeof(value_t));
             int i;
             for (i = argc - 1; i >= 0; i--) {
                 argv[i] = vm_pop(vm);
             }
 
-            switch (builtin_idx) {
-            case 0: /* echo */
-                builtin_echo(vm, argc, argv);
-                break;
-            case 1: /* exit */
-                builtin_exit(vm, argc, argv);
-                break;
-            default:
+            if (builtin_idx < (uint16_t)builtin_count() && builtin_table[builtin_idx].fn != NULL) {
+                int status = builtin_table[builtin_idx].fn(vm, argc, argv);
+                vm->laststatus = status;
+                /* Special case: exit halts the VM */
+                if (strcmp(builtin_table[builtin_idx].name, "exit") == 0) {
+                    vm->halted = true;
+                }
+            } else {
                 fprintf(stderr, "opsh: unknown builtin index %u\n", builtin_idx);
-                vm->laststatus = 1;
-                break;
+                vm->laststatus = 127;
             }
 
             for (i = 0; i < argc; i++) {
