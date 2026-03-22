@@ -18,9 +18,13 @@ FOUNDATION_SRCS = src/foundation/util.c src/foundation/strbuf.c \
                   src/foundation/arena.c src/foundation/rcstr.c
 PARSER_SRCS = src/parser/ast.c src/parser/lexer.c src/parser/parser.c
 VM_SRCS = src/vm/value.c src/vm/vm.c src/vm/disasm.c
+EXEC_SRCS = src/exec/variable.c
+BUILTIN_SRCS = src/builtins/builtins.c
+COMPILER_SRCS = src/compiler/compiler.c
 MAIN_SRCS = src/main.c
 
-ALL_SRCS = $(FOUNDATION_SRCS) $(PARSER_SRCS) $(VM_SRCS) $(MAIN_SRCS)
+ALL_SRCS = $(FOUNDATION_SRCS) $(PARSER_SRCS) $(VM_SRCS) $(EXEC_SRCS) \
+           $(BUILTIN_SRCS) $(COMPILER_SRCS) $(MAIN_SRCS)
 ALL_OBJS = $(ALL_SRCS:src/%.c=$(BUILD)/%.o)
 DEPS = $(ALL_OBJS:.o=.d)
 
@@ -28,6 +32,13 @@ DEPS = $(ALL_OBJS:.o=.d)
 FOUNDATION_OBJS = $(FOUNDATION_SRCS:src/%.c=$(BUILD)/%.o)
 PARSER_OBJS = $(PARSER_SRCS:src/%.c=$(BUILD)/%.o)
 VM_OBJS = $(VM_SRCS:src/%.c=$(BUILD)/%.o)
+EXEC_OBJS = $(EXEC_SRCS:src/%.c=$(BUILD)/%.o)
+BUILTIN_OBJS = $(BUILTIN_SRCS:src/%.c=$(BUILD)/%.o)
+COMPILER_OBJS = $(COMPILER_SRCS:src/%.c=$(BUILD)/%.o)
+
+# All non-main objects (for test linking)
+LIB_OBJS = $(FOUNDATION_OBJS) $(PARSER_OBJS) $(VM_OBJS) $(EXEC_OBJS) \
+           $(BUILTIN_OBJS) $(COMPILER_OBJS)
 
 # Test sources
 TEST_TAP_SRC = tests/test_tap.c
@@ -36,14 +47,17 @@ TEST_FOUNDATION_SRCS = tests/foundation/test_strbuf.c \
                        tests/foundation/test_hashtable.c \
                        tests/foundation/test_util.c
 TEST_PARSER_SRCS = tests/parser/test_lexer.c tests/parser/test_parser.c
-TEST_VM_SRCS = tests/vm/test_vm.c
+TEST_VM_SRCS = tests/vm/test_vm.c tests/vm/test_variable.c
+TEST_COMPILER_SRCS = tests/compiler/test_compiler.c
 
 TEST_TAP_BIN = $(BUILD)/tests/test_tap
 TEST_FOUNDATION_BINS = $(TEST_FOUNDATION_SRCS:tests/%.c=$(BUILD)/tests/%)
 TEST_PARSER_BINS = $(TEST_PARSER_SRCS:tests/%.c=$(BUILD)/tests/%)
 TEST_VM_BINS = $(TEST_VM_SRCS:tests/%.c=$(BUILD)/tests/%)
+TEST_COMPILER_BINS = $(TEST_COMPILER_SRCS:tests/%.c=$(BUILD)/tests/%)
 
-.PHONY: all clean test test-tap test-foundation test-parser test-vm format format-check
+.PHONY: all clean test test-tap test-foundation test-parser test-vm test-compiler \
+        format format-check
 
 all: $(BINARY)
 
@@ -68,11 +82,15 @@ $(BUILD)/tests/parser/%: tests/parser/%.c tests/tap.h $(PARSER_OBJS) $(FOUNDATIO
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(PARSER_OBJS) $(FOUNDATION_OBJS)
 
-$(BUILD)/tests/vm/%: tests/vm/%.c tests/tap.h tests/asm.h $(VM_OBJS) $(FOUNDATION_OBJS)
+$(BUILD)/tests/vm/%: tests/vm/%.c tests/tap.h tests/asm.h $(LIB_OBJS)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(VM_OBJS) $(FOUNDATION_OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJS)
 
-test: test-tap test-foundation test-parser test-vm
+$(BUILD)/tests/compiler/%: tests/compiler/%.c tests/tap.h $(LIB_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJS)
+
+test: test-tap test-foundation test-parser test-vm test-compiler
 
 test-tap: $(TEST_TAP_BIN)
 	$(TEST_TAP_BIN)
@@ -85,6 +103,9 @@ test-parser: $(TEST_PARSER_BINS)
 
 test-vm: $(TEST_VM_BINS)
 	@for t in $(TEST_VM_BINS); do echo "# Running $$t"; $$t || exit 1; done
+
+test-compiler: $(TEST_COMPILER_BINS)
+	@for t in $(TEST_COMPILER_BINS); do echo "# Running $$t"; $$t || exit 1; done
 
 clean:
 	rm -rf $(BUILD)

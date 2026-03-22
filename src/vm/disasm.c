@@ -41,6 +41,10 @@ static const char *opcode_name(uint8_t op)
         return "GET_VAR";
     case OP_SET_VAR:
         return "SET_VAR";
+    case OP_GET_LOCAL:
+        return "GET_LOCAL";
+    case OP_SET_LOCAL:
+        return "SET_LOCAL";
     case OP_GET_ARRAY:
         return "GET_ARRAY";
     case OP_SET_ARRAY:
@@ -173,6 +177,8 @@ size_t disasm_instruction(const bytecode_image_t *img, size_t offset, FILE *out)
         break;
     case OP_GET_VAR:
     case OP_SET_VAR:
+    case OP_GET_LOCAL:
+    case OP_SET_LOCAL:
     case OP_GET_ARRAY:
     case OP_SET_ARRAY:
     case OP_EXPORT: {

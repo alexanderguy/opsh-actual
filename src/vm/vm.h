@@ -2,6 +2,7 @@
 #define OPSH_VM_VM_H
 
 #include "compiler/bytecode.h"
+#include "exec/variable.h"
 #include "opsh/value.h"
 
 #include <stdbool.h>
@@ -27,12 +28,14 @@ typedef struct {
 /*
  * VM state.
  */
-typedef struct {
+typedef struct vm {
     bytecode_image_t *image;
     size_t ip; /* instruction pointer */
 
     value_t stack[VM_STACK_MAX];
     int stack_top; /* index of next free slot */
+
+    environ_t *env; /* current variable scope */
 
     int laststatus; /* $? */
 
