@@ -3,6 +3,7 @@
 #include "foundation/util.h"
 #include "parser/parser.h"
 #include "vm/disasm.h"
+#include "vm/image_io.h"
 #include "vm/vm.h"
 
 #include <stdio.h>
@@ -863,9 +864,99 @@ static void test_module_import(void)
     free(out);
 }
 
+static void test_opsb_roundtrip(void)
+{
+    /* Compile a script, serialize to .opsb, deserialize, and verify
+     * the deserialized image produces the same output */
+    const char *source = "greet() { echo hello; }\ngreet\nfor x in a b; do echo $x; done";
+
+    parser_t p;
+    parser_init(&p, source, "test");
+    sh_list_t *ast = parser_parse(&p);
+    bytecode_image_t *img1 = compile(ast, "test");
+    sh_list_free(ast);
+    parser_destroy(&p);
+
+    tap_ok(img1 != NULL, "opsb: compiled original");
+
+    /* Serialize */
+    mkdir("tmp", 0755);
+    {
+        FILE *out = fopen("tmp/roundtrip.opsb", "wb");
+        tap_ok(out != NULL, "opsb: opened for writing");
+        if (out) {
+            int r = image_write_opsb(img1, out);
+            tap_is_int(r, 0, "opsb: write succeeded");
+            fclose(out);
+        }
+    }
+
+    /* Deserialize */
+    bytecode_image_t *img2 = NULL;
+    {
+        FILE *in = fopen("tmp/roundtrip.opsb", "rb");
+        tap_ok(in != NULL, "opsb: opened for reading");
+        if (in) {
+            img2 = image_read_opsb(in);
+            fclose(in);
+        }
+    }
+    tap_ok(img2 != NULL, "opsb: deserialized successfully");
+
+    /* Structural comparison */
+    if (img2 != NULL) {
+        tap_is_int(img2->const_count, img1->const_count, "opsb: const count matches");
+        tap_is_int((long long)img2->code_size, (long long)img1->code_size,
+                   "opsb: code size matches");
+        tap_is_int(img2->func_count, img1->func_count, "opsb: func count matches");
+        tap_ok(memcmp(img2->code, img1->code, img1->code_size) == 0, "opsb: bytecode matches");
+    } else {
+        tap_skip(4, "deserialization failed");
+    }
+
+    /* Run deserialized image and compare output */
+    if (img2 != NULL) {
+        int pipefd[2];
+        pipe(pipefd);
+        fflush(stdout);
+        int saved = dup(STDOUT_FILENO);
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
+
+        vm_t vm;
+        vm_init(&vm, img2);
+        vm_run(&vm);
+
+        fflush(stdout);
+        dup2(saved, STDOUT_FILENO);
+        close(saved);
+
+        strbuf_t captured;
+        strbuf_init(&captured);
+        {
+            char buf[4096];
+            ssize_t n;
+            while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
+                strbuf_append_bytes(&captured, buf, (size_t)n);
+            }
+        }
+        close(pipefd[0]);
+
+        tap_is_str(captured.contents, "hello\na\nb\n", "opsb: roundtrip produces same output");
+        strbuf_destroy(&captured);
+        vm_destroy(&vm);
+    } else {
+        tap_skip(1, "deserialization failed");
+    }
+
+    image_free(img1);
+    image_free(img2);
+    unlink("tmp/roundtrip.opsb");
+}
+
 int main(void)
 {
-    tap_plan(105);
+    tap_plan(115);
 
     test_echo_hello_world();
     test_echo_single_word();
@@ -925,6 +1016,7 @@ int main(void)
     test_exit_trap();
     test_trap_builtin();
     test_module_import();
+    test_opsb_roundtrip();
 
     return tap_done();
 }

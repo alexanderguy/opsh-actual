@@ -3,6 +3,7 @@
 #include "exec/signal.h"
 #include "foundation/util.h"
 #include "parser/parser.h"
+#include "vm/image_io.h"
 #include "vm/vm.h"
 
 #include <fcntl.h>
@@ -33,79 +34,49 @@ static char *read_file(const char *path)
 
 static void usage(const char *progname)
 {
-    fprintf(stderr, "usage: %s [--agent-stdio] <script.opsh>\n", progname);
+    fprintf(stderr, "usage: %s [options] <script>\n", progname);
+    fprintf(stderr, "       %s build <script.opsh> -o <output.opsb>\n", progname);
+    fprintf(stderr, "options:\n");
+    fprintf(stderr, "  --agent-stdio   emit JSON-RPC events to stderr\n");
 }
 
-int main(int argc, char *argv[])
+/* Compile a .opsh script to a bytecode image */
+static bytecode_image_t *compile_script(const char *path)
 {
-    const char *script_path = NULL;
-    int agent_stdio = 0;
-    int i;
-
-    for (i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--agent-stdio") == 0) {
-            agent_stdio = 1;
-        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            usage(argv[0]);
-            return 0;
-        } else if (argv[i][0] == '-') {
-            fprintf(stderr, "opsh: unknown option: %s\n", argv[i]);
-            usage(argv[0]);
-            return 1;
-        } else {
-            script_path = argv[i];
-        }
-    }
-
-    if (script_path == NULL) {
-        fprintf(stderr, "opsh: no script specified\n");
-        usage(argv[0]);
-        return 1;
-    }
-
-    /* Initialize signal handling */
-    signal_init();
-
-    /* Read script */
-    char *source = read_file(script_path);
+    char *source = read_file(path);
     if (source == NULL) {
-        fprintf(stderr, "opsh: cannot read %s\n", script_path);
-        return 1;
+        fprintf(stderr, "opsh: cannot read %s\n", path);
+        return NULL;
     }
 
-    /* Parse */
     parser_t p;
-    parser_init(&p, source, script_path);
+    parser_init(&p, source, path);
     sh_list_t *ast = parser_parse(&p);
 
     if (parser_error_count(&p) > 0) {
-        fprintf(stderr, "opsh: parse errors in %s\n", script_path);
+        fprintf(stderr, "opsh: parse errors in %s\n", path);
         sh_list_free(ast);
         parser_destroy(&p);
         free(source);
-        return 2;
+        return NULL;
     }
 
-    /* Compile */
-    bytecode_image_t *img = compile(ast, script_path);
+    bytecode_image_t *img = compile(ast, path);
     sh_list_free(ast);
     parser_destroy(&p);
     free(source);
 
-    if (img == NULL) {
-        fprintf(stderr, "opsh: compilation failed for %s\n", script_path);
-        return 2;
-    }
+    return img;
+}
 
-    /* Execute */
+/* Execute a bytecode image */
+static int run_image(bytecode_image_t *img, const char *filename, int agent_stdio)
+{
     vm_t vm;
     vm_init(&vm, img);
 
     event_sink_t *sink = NULL;
     if (agent_stdio) {
-        /* Use a dedicated FD for the event stream, separate from stderr.
-         * Dup stderr to a high FD for the event stream, then redirect
-         * stderr to /dev/null so VM diagnostics don't corrupt the stream. */
         int event_fd = dup(STDERR_FILENO);
         {
             int devnull = open("/dev/null", O_WRONLY);
@@ -118,17 +89,15 @@ int main(int argc, char *argv[])
         vm.event_sink = sink;
     }
 
-    /* Emit scriptStart */
     {
         event_t ev = {0};
         ev.type = EVENT_SCRIPT_START;
-        ev.filename = script_path;
+        ev.filename = filename;
         event_emit(vm.event_sink, &ev);
     }
 
     int status = vm_run(&vm);
 
-    /* Emit scriptEnd */
     {
         event_t ev = {0};
         ev.type = EVENT_SCRIPT_END;
@@ -138,6 +107,104 @@ int main(int argc, char *argv[])
 
     event_sink_free(sink);
     vm_destroy(&vm);
+
+    return status;
+}
+
+int main(int argc, char *argv[])
+{
+    const char *script_path = NULL;
+    const char *output_path = NULL;
+    int agent_stdio = 0;
+    int do_build = 0;
+    int i;
+
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "build") == 0 && i == 1) {
+            do_build = 1;
+        } else if (strcmp(argv[i], "--agent-stdio") == 0) {
+            agent_stdio = 1;
+        } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
+            output_path = argv[++i];
+        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            usage(argv[0]);
+            return 0;
+        } else if (argv[i][0] == '-') {
+            fprintf(stderr, "opsh: unknown option: %s\n", argv[i]);
+            usage(argv[0]);
+            return 1;
+        } else if (script_path == NULL) {
+            script_path = argv[i];
+        }
+    }
+
+    if (script_path == NULL) {
+        fprintf(stderr, "opsh: no script specified\n");
+        usage(argv[0]);
+        return 1;
+    }
+
+    signal_init();
+
+    /* opsh build: compile to .opsb */
+    if (do_build) {
+        if (output_path == NULL) {
+            fprintf(stderr, "opsh: build requires -o <output>\n");
+            return 1;
+        }
+
+        bytecode_image_t *img = compile_script(script_path);
+        if (img == NULL) {
+            return 2;
+        }
+
+        FILE *out = fopen(output_path, "wb");
+        if (out == NULL) {
+            fprintf(stderr, "opsh: cannot open %s for writing\n", output_path);
+            image_free(img);
+            return 1;
+        }
+
+        int result = image_write_opsb(img, out);
+        fclose(out);
+        image_free(img);
+
+        if (result != 0) {
+            fprintf(stderr, "opsh: write error\n");
+            return 1;
+        }
+        return 0;
+    }
+
+    /* Check if input is a .opsb file */
+    {
+        size_t len = strlen(script_path);
+        if (len > 5 && strcmp(script_path + len - 5, ".opsb") == 0) {
+            /* Load pre-compiled bytecode */
+            FILE *in = fopen(script_path, "rb");
+            if (in == NULL) {
+                fprintf(stderr, "opsh: cannot read %s\n", script_path);
+                return 1;
+            }
+            bytecode_image_t *img = image_read_opsb(in);
+            fclose(in);
+            if (img == NULL) {
+                fprintf(stderr, "opsh: failed to load %s\n", script_path);
+                return 2;
+            }
+            int status = run_image(img, script_path, agent_stdio);
+            image_free(img);
+            return status;
+        }
+    }
+
+    /* Compile and run .opsh script */
+    bytecode_image_t *img = compile_script(script_path);
+    if (img == NULL) {
+        return 2;
+    }
+
+    int status = run_image(img, script_path, agent_stdio);
     image_free(img);
 
     return status;
