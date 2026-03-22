@@ -903,6 +903,7 @@ int vm_run(vm_t *vm)
                 }
                 fprintf(stderr, "opsh: %s: %s\n", msg, expr_str);
                 vm->laststatus = 1;
+                vm->halted = true;
             }
 
             rcstr_release(expr_str);
