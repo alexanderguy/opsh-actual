@@ -717,8 +717,10 @@ static void compile_if(compiler_t *cc, command_t *cmd)
 
     for (ic = cmd->u.if_clause.clauses; ic != NULL; ic = ic->next) {
         if (ic->condition != NULL) {
-            /* Compile condition */
+            /* Compile condition (errexit suppressed) */
+            image_emit_u8(cc->image, OP_ERREXIT_PUSH);
             compile_program(cc, ic->condition);
+            image_emit_u8(cc->image, OP_ERREXIT_POP);
             /* Jump past body if condition fails */
             size_t skip_body = emit_jump(cc, OP_JMP_FALSE);
             /* Compile body */
@@ -834,7 +836,9 @@ static void compile_while_until(compiler_t *cc, command_t *cmd, bool is_until)
     /* Loop top: evaluate condition */
     size_t loop_top = cc->image->code_size;
 
+    image_emit_u8(cc->image, OP_ERREXIT_PUSH);
     compile_program(cc, cmd->u.while_clause.condition);
+    image_emit_u8(cc->image, OP_ERREXIT_POP);
 
     /* Jump past body if condition fails (while) or succeeds (until) */
     size_t exit_jump;
@@ -1434,8 +1438,12 @@ static void compile_and_or(compiler_t *cc, and_or_t *pl)
 
     /* Single-command pipeline: no fork needed */
     if (pl->commands->next == NULL) {
+        if (pl->negated) {
+            image_emit_u8(cc->image, OP_ERREXIT_PUSH);
+        }
         compile_command(cc, pl->commands);
         if (pl->negated) {
+            image_emit_u8(cc->image, OP_ERREXIT_POP);
             image_emit_u8(cc->image, OP_NEGATE_STATUS);
         }
         return;
@@ -1491,6 +1499,14 @@ static void compile_sh_list(compiler_t *cc, sh_list_t *ao)
         return;
     }
 
+    /* Suppress errexit for all commands in && || chains.
+     * POSIX says only non-last commands are exempt, but correctly
+     * implementing that requires tracking the short-circuit path
+     * for balanced PUSH/POP. We suppress the entire chain. */
+    bool has_connectors = (ao->pipelines->next != NULL);
+    if (has_connectors) {
+        image_emit_u8(cc->image, OP_ERREXIT_PUSH);
+    }
     compile_and_or(cc, ao->pipelines);
 
     for (pl = ao->pipelines; pl->next != NULL; pl = pl->next) {
@@ -1502,6 +1518,10 @@ static void compile_sh_list(compiler_t *cc, sh_list_t *ao)
         }
         compile_and_or(cc, pl->next);
         patch_jump(cc, patch);
+    }
+
+    if (has_connectors) {
+        image_emit_u8(cc->image, OP_ERREXIT_POP);
     }
 }
 
