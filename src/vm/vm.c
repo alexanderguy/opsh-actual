@@ -1144,6 +1144,11 @@ int vm_run(vm_t *vm)
             variable_t *var = environ_get(vm->env, name);
             if (var != NULL) {
                 vm_push(vm, value_clone(&var->value));
+            } else if (vm->opt_nounset) {
+                fprintf(stderr, "opsh: %s: unbound variable\n", name);
+                vm->laststatus = 1;
+                vm->halted = true;
+                vm_push(vm, value_string(rcstr_new("")));
             } else {
                 /* Unset variable: push empty string */
                 vm_push(vm, value_string(rcstr_new("")));
@@ -1225,6 +1230,25 @@ int vm_run(vm_t *vm)
             int i;
             for (i = argc - 1; i >= 0; i--) {
                 argv[i] = vm_pop(vm);
+            }
+
+            /* xtrace: print command before execution */
+            if (vm->opt_xtrace) {
+                const char *ps4 = "+ ";
+                variable_t *ps4_var = environ_get(vm->env, "PS4");
+                if (ps4_var != NULL && ps4_var->value.type == VT_STRING) {
+                    ps4 = ps4_var->value.data.string;
+                }
+                fprintf(stderr, "%s", ps4);
+                for (i = 0; i < argc; i++) {
+                    char *s = value_to_string(&argv[i]);
+                    if (i > 0) {
+                        fputc(' ', stderr);
+                    }
+                    fprintf(stderr, "%s", s);
+                    free(s);
+                }
+                fputc('\n', stderr);
             }
 
             if (builtin_idx < (uint16_t)builtin_count() && builtin_table[builtin_idx].fn != NULL) {
@@ -1806,6 +1830,7 @@ int vm_run(vm_t *vm)
                 break;
             }
 
+
             /* Flush stdio before forking to avoid duplicated buffered output */
             fflush(stdout);
             fflush(stderr);
@@ -2319,6 +2344,16 @@ int vm_run(vm_t *vm)
             break;
         }
 
+        case OP_ERREXIT_PUSH:
+            vm->errexit_suppressed++;
+            break;
+
+        case OP_ERREXIT_POP:
+            if (vm->errexit_suppressed > 0) {
+                vm->errexit_suppressed--;
+            }
+            break;
+
         case OP_HALT:
             vm_exit(vm, vm->laststatus);
             break;
@@ -2328,6 +2363,15 @@ int vm_run(vm_t *vm)
             vm->laststatus = 1;
             vm->halted = true;
             break;
+        }
+
+        /* errexit (-e): exit if command failed and not suppressed */
+        if (vm->opt_errexit && vm->errexit_suppressed == 0 && vm->laststatus != 0) {
+            /* Only trigger on command execution opcodes */
+            if (op == OP_EXEC_SIMPLE || op == OP_EXEC_BUILTIN || op == OP_EXEC_FUNC ||
+                op == OP_PIPELINE || op == OP_SUBSHELL) {
+                vm_exit(vm, vm->laststatus);
+            }
         }
     }
 

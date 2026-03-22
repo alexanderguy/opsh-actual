@@ -137,6 +137,10 @@ static const char *opcode_name(uint8_t op)
         return "IMPORT";
     case OP_CAP_CHECK:
         return "CAP_CHECK";
+    case OP_ERREXIT_PUSH:
+        return "ERREXIT_PUSH";
+    case OP_ERREXIT_POP:
+        return "ERREXIT_POP";
     case OP_HALT:
         return "HALT";
     }

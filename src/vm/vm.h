@@ -135,6 +135,12 @@ typedef struct vm {
     pid_t last_bg_pid;       /* $! */
     char option_flags[16];   /* $- */
 
+    /* Shell options (set -e, -u, -x) */
+    bool opt_errexit;       /* -e */
+    bool opt_nounset;       /* -u */
+    bool opt_xtrace;        /* -x */
+    int errexit_suppressed; /* depth counter for if/while/&&/|| contexts */
+
     /* Trap handlers: command strings indexed by signal number.
      * NULL means default behavior, "" means ignore. */
     char *trap_handlers[32];

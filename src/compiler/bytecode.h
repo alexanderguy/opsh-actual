@@ -100,6 +100,10 @@ typedef enum {
     OP_IMPORT = 0x70,    /* u16 module_name_idx */
     OP_CAP_CHECK = 0x71, /* u8 capability */
 
+    /* Shell option support */
+    OP_ERREXIT_PUSH = 0x80, /* suppress errexit (entering if/while/&&/|| context) */
+    OP_ERREXIT_POP = 0x81,  /* restore errexit */
+
     /* Sentinel */
     OP_HALT = 0xFF,
 } opcode_t;

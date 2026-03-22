@@ -1078,21 +1078,277 @@ static int builtin_umask(vm_t *vm, int argc, value_t *argv)
     return 0;
 }
 
+static void update_option_flags(vm_t *vm)
+{
+    char *p = vm->option_flags;
+    if (vm->opt_errexit) {
+        *p++ = 'e';
+    }
+    if (vm->opt_nounset) {
+        *p++ = 'u';
+    }
+    if (vm->opt_xtrace) {
+        *p++ = 'x';
+    }
+    *p = '\0';
+}
+
+static int builtin_set(vm_t *vm, int argc, value_t *argv)
+{
+    if (argc < 2) {
+        return 0;
+    }
+
+    int i;
+    for (i = 1; i < argc; i++) {
+        char *arg = value_to_string(&argv[i]);
+
+        /* set -- args: replace positional parameters */
+        if (strcmp(arg, "--") == 0) {
+            free(arg);
+            /* Clear existing positional params */
+            variable_t *hash_var = environ_get(vm->env, "#");
+            int old_count = 0;
+            if (hash_var != NULL) {
+                old_count = (int)value_to_integer(&hash_var->value);
+            }
+            {
+                int pi;
+                for (pi = 1; pi <= old_count; pi++) {
+                    char name[16];
+                    snprintf(name, sizeof(name), "%d", pi);
+                    environ_unset(vm->env, name);
+                }
+            }
+            /* Set new positional params from remaining args */
+            int new_count = argc - i - 1;
+            if (new_count > 0) {
+                char **new_args = xcalloc((size_t)new_count, sizeof(char *));
+                int ai;
+                for (ai = 0; ai < new_count; ai++) {
+                    new_args[ai] = value_to_string(&argv[i + 1 + ai]);
+                }
+                vm_set_args(vm, new_count, new_args);
+                for (ai = 0; ai < new_count; ai++) {
+                    free(new_args[ai]);
+                }
+                free(new_args);
+            } else {
+                char *zero = xstrdup("0");
+                environ_set(vm->env, "#", value_string(zero));
+            }
+            /* Reset OPTIND */
+            environ_assign(vm->env, "OPTIND", value_string(xstrdup("1")));
+            update_option_flags(vm);
+            return 0;
+        }
+
+        /* Option flags: -eux or +eux */
+        if ((arg[0] == '-' || arg[0] == '+') && arg[1] != '\0') {
+            bool enable = (arg[0] == '-');
+            const char *p = arg + 1;
+            while (*p) {
+                switch (*p) {
+                case 'e':
+                    vm->opt_errexit = enable;
+                    break;
+                case 'u':
+                    vm->opt_nounset = enable;
+                    break;
+                case 'x':
+                    vm->opt_xtrace = enable;
+                    break;
+                default:
+                    fprintf(stderr, "opsh: set: %c%c: invalid option\n", arg[0], *p);
+                    free(arg);
+                    return 2;
+                }
+                p++;
+            }
+            free(arg);
+            continue;
+        }
+
+        free(arg);
+    }
+
+    update_option_flags(vm);
+    return 0;
+}
+
+static int builtin_getopts(vm_t *vm, int argc, value_t *argv)
+{
+    if (argc < 3) {
+        fprintf(stderr, "opsh: getopts: usage: getopts optstring varname [args]\n");
+        return 2;
+    }
+
+    char *optstring = value_to_string(&argv[1]);
+    char *varname = value_to_string(&argv[2]);
+
+    /* Get OPTIND */
+    variable_t *optind_var = environ_get(vm->env, "OPTIND");
+    int optind = 1;
+    if (optind_var != NULL) {
+        optind = (int)value_to_integer(&optind_var->value);
+    }
+
+    /* Determine the argument source */
+    int src_argc;
+    value_t *src_argv;
+    if (argc > 3) {
+        src_argc = argc - 3;
+        src_argv = argv + 3;
+    } else {
+        /* Use positional parameters */
+        variable_t *hash_var = environ_get(vm->env, "#");
+        int param_count = 0;
+        if (hash_var != NULL) {
+            param_count = (int)value_to_integer(&hash_var->value);
+        }
+        src_argc = param_count;
+        src_argv = NULL; /* use environ_get for $1..$N */
+    }
+
+    bool silent = (optstring[0] == ':');
+    const char *opts = silent ? optstring + 1 : optstring;
+
+    if (optind < 1 || optind > src_argc) {
+        /* No more options */
+        environ_assign(vm->env, varname, value_string(xstrdup("?")));
+        free(optstring);
+        free(varname);
+        return 1;
+    }
+
+    /* Get the current argument */
+    char *cur_arg;
+    if (src_argv != NULL) {
+        cur_arg = value_to_string(&src_argv[optind - 1]);
+    } else {
+        char pname[16];
+        snprintf(pname, sizeof(pname), "%d", optind);
+        variable_t *pv = environ_get(vm->env, pname);
+        cur_arg = pv ? value_to_string(&pv->value) : xstrdup("");
+    }
+
+    /* Track position within bundled options (e.g., -abc) */
+    int optpos = 1; /* default: first char after - */
+    {
+        variable_t *pos_var = environ_get(vm->env, "_OPTPOS");
+        if (pos_var != NULL) {
+            int pv = (int)value_to_integer(&pos_var->value);
+            if (pv > 1) {
+                optpos = pv;
+            }
+        }
+    }
+
+    if (cur_arg[0] != '-' || cur_arg[1] == '\0' || strcmp(cur_arg, "--") == 0) {
+        environ_assign(vm->env, varname, value_string(xstrdup("?")));
+        environ_assign(vm->env, "_OPTPOS", value_string(xstrdup("1")));
+        free(cur_arg);
+        free(optstring);
+        free(varname);
+        return 1;
+    }
+
+    char opt_ch = cur_arg[optpos];
+    if (opt_ch == '\0') {
+        /* Past end of this arg, move to next */
+        environ_assign(vm->env, "_OPTPOS", value_string(xstrdup("1")));
+        environ_assign(vm->env, varname, value_string(xstrdup("?")));
+        free(cur_arg);
+        free(optstring);
+        free(varname);
+        return 1;
+    }
+    const char *found = strchr(opts, opt_ch);
+
+    if (found == NULL) {
+        /* Invalid option */
+        if (!silent) {
+            fprintf(stderr, "opsh: illegal option -- %c\n", opt_ch);
+        }
+        char optstr[2] = {opt_ch, '\0'};
+        environ_assign(vm->env, varname, value_string(xstrdup("?")));
+        if (silent) {
+            environ_assign(vm->env, "OPTARG", value_string(xstrdup(optstr)));
+        }
+    } else if (found[1] == ':') {
+        /* Option requires argument */
+        if (cur_arg[optpos + 1] != '\0') {
+            /* Argument attached: -fvalue or bundled -bfvalue */
+            char optstr[2] = {opt_ch, '\0'};
+            environ_assign(vm->env, varname, value_string(xstrdup(optstr)));
+            environ_assign(vm->env, "OPTARG", value_string(xstrdup(cur_arg + optpos + 1)));
+        } else if (optind < src_argc) {
+            /* Argument is next word */
+            optind++;
+            char *next_arg;
+            if (src_argv != NULL) {
+                next_arg = value_to_string(&src_argv[optind - 1]);
+            } else {
+                char pname[16];
+                snprintf(pname, sizeof(pname), "%d", optind);
+                variable_t *pv = environ_get(vm->env, pname);
+                next_arg = pv ? value_to_string(&pv->value) : xstrdup("");
+            }
+            char optstr[2] = {opt_ch, '\0'};
+            environ_assign(vm->env, varname, value_string(xstrdup(optstr)));
+            environ_assign(vm->env, "OPTARG", value_string(next_arg));
+        } else {
+            /* Missing argument */
+            if (!silent) {
+                fprintf(stderr, "opsh: option requires an argument -- %c\n", opt_ch);
+            }
+            if (silent) {
+                char optstr[2] = {opt_ch, '\0'};
+                environ_assign(vm->env, varname, value_string(xstrdup(":")));
+                environ_assign(vm->env, "OPTARG", value_string(xstrdup(optstr)));
+            } else {
+                environ_assign(vm->env, varname, value_string(xstrdup("?")));
+            }
+        }
+    } else {
+        /* Simple option, no argument */
+        char optstr[2] = {opt_ch, '\0'};
+        environ_assign(vm->env, varname, value_string(xstrdup(optstr)));
+        environ_assign(vm->env, "OPTARG", value_string(xstrdup("")));
+    }
+
+    /* Advance position within bundled options or move to next arg */
+    if (opt_ch != '\0' && cur_arg[optpos + 1] != '\0' && (found == NULL || found[1] != ':')) {
+        /* More options bundled in this arg */
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d", optpos + 1);
+        environ_assign(vm->env, "_OPTPOS", value_string(xstrdup(buf)));
+    } else {
+        /* Move to next argument */
+        environ_assign(vm->env, "_OPTPOS", value_string(xstrdup("1")));
+        optind++;
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d", optind);
+        environ_assign(vm->env, "OPTIND", value_string(xstrdup(buf)));
+    }
+
+    free(cur_arg);
+    free(optstring);
+    free(varname);
+    return 0;
+}
+
 const builtin_entry_t builtin_table[] = {
-    {"echo", builtin_echo},       {"exit", builtin_exit},
-    {"true", builtin_true},       {"false", builtin_false},
-    {":", builtin_true},          {"cd", builtin_cd},
-    {"pwd", builtin_pwd},         {"export", builtin_export},
-    {"unset", builtin_unset},     {"readonly", builtin_readonly},
-    {"local", builtin_local},     {"shift", builtin_shift},
-    {"test", builtin_test},       {"[", builtin_test},
-    {"printf", builtin_printf},   {"read", builtin_read},
-    {"return", builtin_return},   {"type", builtin_type},
-    {"trap", builtin_trap},       {"eval", builtin_eval},
-    {".", builtin_dot},           {"source", builtin_dot},
-    {"command", builtin_command}, {"exec", builtin_exec},
-    {"wait", builtin_wait},       {"kill", builtin_kill},
-    {"umask", builtin_umask},     {NULL, NULL},
+    {"echo", builtin_echo},         {"exit", builtin_exit},       {"true", builtin_true},
+    {"false", builtin_false},       {":", builtin_true},          {"cd", builtin_cd},
+    {"pwd", builtin_pwd},           {"export", builtin_export},   {"unset", builtin_unset},
+    {"readonly", builtin_readonly}, {"local", builtin_local},     {"shift", builtin_shift},
+    {"test", builtin_test},         {"[", builtin_test},          {"printf", builtin_printf},
+    {"read", builtin_read},         {"return", builtin_return},   {"type", builtin_type},
+    {"trap", builtin_trap},         {"eval", builtin_eval},       {".", builtin_dot},
+    {"source", builtin_dot},        {"command", builtin_command}, {"exec", builtin_exec},
+    {"wait", builtin_wait},         {"kill", builtin_kill},       {"umask", builtin_umask},
+    {"set", builtin_set},           {"getopts", builtin_getopts}, {NULL, NULL},
 };
 
 int builtin_lookup(const char *name)
