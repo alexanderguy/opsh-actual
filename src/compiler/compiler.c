@@ -716,7 +716,12 @@ static void compile_simple(compiler_t *cc, command_t *cmd)
         }
     }
 
-    image_emit_u8(cc->image, OP_REDIR_RESTORE);
+    /* exec without args: redirections are permanent (don't restore) */
+    bool is_exec_no_args = (words->length == 1 && is_literal_word(cmd_word) &&
+                            strcmp(literal_value(cmd_word), "exec") == 0);
+    if (!is_exec_no_args) {
+        image_emit_u8(cc->image, OP_REDIR_RESTORE);
+    }
 }
 
 /*
@@ -1517,14 +1522,15 @@ static void compile_sh_list(compiler_t *cc, sh_list_t *ao)
         return;
     }
 
-    /* Suppress errexit for all commands in && || chains.
-     * POSIX says only non-last commands are exempt, but correctly
-     * implementing that requires tracking the short-circuit path
-     * for balanced PUSH/POP. We suppress the entire chain. */
+    /* Suppress errexit for commands in && || chains. POSIX says only
+     * non-last commands are exempt, but the jump-patching makes it
+     * difficult to selectively unsuppress the last command without
+     * breaking && || short-circuit semantics. */
     bool has_connectors = (ao->pipelines->next != NULL);
     if (has_connectors) {
         image_emit_u8(cc->image, OP_ERREXIT_PUSH);
     }
+
     compile_and_or(cc, ao->pipelines);
 
     for (pl = ao->pipelines; pl->next != NULL; pl = pl->next) {
