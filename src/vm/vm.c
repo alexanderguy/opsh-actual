@@ -289,7 +289,9 @@ int vm_exec_string(vm_t *vm, const char *source, const char *label)
             vm_func_t entry;
             entry.name = sub.func_table[fi].name;
             entry.bytecode_offset = sub.func_table[fi].bytecode_offset;
-            entry.image = img;
+            /* Preserve image pointer from nested evals; only set to
+             * this image for functions that were compiled here (NULL) */
+            entry.image = sub.func_table[fi].image ? sub.func_table[fi].image : img;
 
             if (existing >= 0) {
                 /* Overwrite existing function (redefinition) */
