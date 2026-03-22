@@ -123,7 +123,14 @@ void environ_assign(environ_t *env, const char *name, value_t value)
         }
         scope = scope->parent;
     }
-    environ_set(env, name, value);
+    /* Variable not found anywhere: create in global scope (outermost).
+     * This matches POSIX behavior where assignments without `local`
+     * are visible globally, even when made inside functions. */
+    environ_t *global = env;
+    while (global->parent != NULL) {
+        global = global->parent;
+    }
+    environ_set(global, name, value);
 }
 
 void environ_set_local(environ_t *env, const char *name, value_t value)
