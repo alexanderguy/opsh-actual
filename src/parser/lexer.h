@@ -71,7 +71,7 @@ typedef enum {
  */
 typedef struct {
     token_type_t type;
-    char *value;      /* token text (owned; NULL for operators) */
+    char *value;       /* token text (owned; NULL for operators) */
     word_part_t *word; /* parsed word structure (for TOK_WORD/TOK_ASSIGNMENT) */
     unsigned int lineno;
 } token_t;
