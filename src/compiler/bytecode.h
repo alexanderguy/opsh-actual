@@ -58,6 +58,7 @@ typedef enum {
     OP_QUOTE_REMOVE = 0x25,  /* value -> value */
     OP_EXPAND_TILDE = 0x26,  /* value -> value */
     OP_COLLECT_WORDS = 0x27, /* (val count)... ngroups -> args... argc */
+    OP_EXPAND_ARGS = 0x28,   /* -> values... count (positional params as separate words) */
 
     /* Control flow */
     OP_JMP = 0x30,       /* i32 offset */

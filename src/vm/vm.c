@@ -1004,6 +1004,30 @@ int vm_run(vm_t *vm)
             break;
         }
 
+        case OP_EXPAND_ARGS: {
+            /* Push each positional parameter as a separate value, then count.
+             * Produces the same stack layout as SPLIT_FIELDS but preserves
+             * word boundaries for "$@". */
+            variable_t *hash_var = environ_get(vm->env, "#");
+            int count = 0;
+            if (hash_var != NULL) {
+                count = (int)value_to_integer(&hash_var->value);
+            }
+            int pi;
+            for (pi = 1; pi <= count; pi++) {
+                char name[16];
+                snprintf(name, sizeof(name), "%d", pi);
+                variable_t *pv = environ_get(vm->env, name);
+                if (pv != NULL) {
+                    vm_push(vm, value_clone(&pv->value));
+                } else {
+                    vm_push(vm, value_string(xstrdup("")));
+                }
+            }
+            vm_push(vm, value_integer(count));
+            break;
+        }
+
         case OP_QUOTE_REMOVE:
             break;
 
