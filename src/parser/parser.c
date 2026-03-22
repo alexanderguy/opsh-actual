@@ -1182,8 +1182,8 @@ static cond_expr_t *parse_cond_expr_and(parser_t *p)
 
 static cond_expr_t *parse_cond_expr_not(parser_t *p)
 {
-    if ((peek(p)->type == TOK_WORD || peek(p)->type == TOK_BANG) && peek(p)->value != NULL &&
-        strcmp(peek(p)->value, "!") == 0) {
+    if (peek(p)->type == TOK_BANG ||
+        (peek(p)->type == TOK_WORD && peek(p)->value != NULL && strcmp(peek(p)->value, "!") == 0)) {
         consume(p);
         cond_expr_t *child = parse_cond_expr_not(p);
         if (child == NULL) {
@@ -1292,6 +1292,31 @@ static cond_expr_t *parse_cond_expr_primary(parser_t *p)
             right_tok.word = NULL;
             free(right_tok.value);
             return node;
+        }
+
+        /* Handle != (lexer splits into TOK_BANG + word "=") */
+        if (maybe_op->type == TOK_BANG) {
+            consume(p); /* consume ! */
+            const token_t *eq_tok = peek(p);
+            if (eq_tok->value != NULL && strcmp(eq_tok->value, "=") == 0) {
+                consume(p); /* consume = */
+                token_t right_tok = next(p);
+
+                cond_expr_t *node = xcalloc(1, sizeof(*node));
+                node->type = COND_BINARY;
+                node->u.binary.op = xstrdup("!=");
+                node->u.binary.left = left_tok.word;
+                left_tok.word = NULL;
+                free(left_tok.value);
+                node->u.binary.right = right_tok.word;
+                right_tok.word = NULL;
+                free(right_tok.value);
+                return node;
+            }
+            parser_error(p, "unexpected '!' in [[ ]] expression");
+            free(left_tok.value);
+            word_part_free(left_tok.word);
+            return NULL;
         }
 
         /* Bare string (equivalent to -n test) */
