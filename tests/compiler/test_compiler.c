@@ -155,9 +155,123 @@ static void test_disasm_output(void)
     image_free(img);
 }
 
+static void test_variable_expansion(void)
+{
+    int status;
+    char *out = compile_and_run("VAR=hello; echo $VAR", &status);
+    tap_is_str(out, "hello\n", "$VAR: expands variable");
+    free(out);
+}
+
+static void test_variable_in_word(void)
+{
+    int status;
+    char *out = compile_and_run("NAME=world; echo hello$NAME", &status);
+    tap_is_str(out, "helloworld\n", "hello$NAME: concatenated expansion");
+    free(out);
+}
+
+static void test_braced_variable(void)
+{
+    int status;
+    char *out = compile_and_run("X=foo; echo ${X}bar", &status);
+    tap_is_str(out, "foobar\n", "${X}bar: braced expansion");
+    free(out);
+}
+
+static void test_unset_variable(void)
+{
+    int status;
+    char *out = compile_and_run("echo $UNSET_VAR", &status);
+    tap_is_str(out, "\n", "unset var: expands to empty");
+    free(out);
+}
+
+static void test_param_default(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("echo ${MISS:-fallback}", &status);
+    tap_is_str(out, "fallback\n", "${:-}: uses default when unset");
+    free(out);
+
+    out = compile_and_run("HIT=value; echo ${HIT:-fallback}", &status);
+    tap_is_str(out, "value\n", "${:-}: uses value when set");
+    free(out);
+
+    out = compile_and_run("EMPTY=; echo ${EMPTY:-fallback}", &status);
+    tap_is_str(out, "fallback\n", "${:-}: uses default when empty (colon)");
+    free(out);
+}
+
+static void test_param_assign(void)
+{
+    int status;
+    char *out = compile_and_run("echo ${NEW:=assigned}; echo $NEW", &status);
+    tap_is_str(out, "assigned\nassigned\n", "${:=}: assigns and returns");
+    free(out);
+}
+
+static void test_param_alternate(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("X=yes; echo ${X:+alternate}", &status);
+    tap_is_str(out, "alternate\n", "${:+}: uses alternate when set");
+    free(out);
+
+    out = compile_and_run("echo ${MISS:+alternate}", &status);
+    tap_is_str(out, "\n", "${:+}: empty when unset");
+    free(out);
+}
+
+static void test_param_error(void)
+{
+    int status;
+    char *out = compile_and_run("echo ${MISS:?oops}", &status);
+    tap_ok(status != 0, "${:?}: non-zero exit on unset");
+    free(out);
+}
+
+static void test_param_length(void)
+{
+    int status;
+    char *out = compile_and_run("X=hello; echo ${#X}", &status);
+    tap_is_str(out, "5\n", "${#X}: string length");
+    free(out);
+}
+
+static void test_special_question(void)
+{
+    int status;
+    char *out = compile_and_run("true; echo $?", &status);
+    tap_is_str(out, "0\n", "$?: exit status of last command");
+    free(out);
+}
+
+static void test_arithmetic(void)
+{
+    int status;
+    char *out;
+
+    out = compile_and_run("echo $((1 + 2))", &status);
+    tap_is_str(out, "3\n", "$((1+2)): basic addition");
+    free(out);
+
+    out = compile_and_run("echo $((10 - 3))", &status);
+    tap_is_str(out, "7\n", "$((10-3)): subtraction");
+    free(out);
+
+    out = compile_and_run("echo $((4 * 5))", &status);
+    tap_is_str(out, "20\n", "$((4*5)): multiplication");
+    free(out);
+}
+
 int main(void)
 {
-    tap_plan(17);
+    tap_plan(33);
 
     test_echo_hello_world();
     test_echo_single_word();
@@ -169,6 +283,17 @@ int main(void)
     test_colon();
     test_unknown_command();
     test_disasm_output();
+    test_variable_expansion();
+    test_variable_in_word();
+    test_braced_variable();
+    test_unset_variable();
+    test_param_default();
+    test_param_assign();
+    test_param_alternate();
+    test_param_error();
+    test_param_length();
+    test_special_question();
+    test_arithmetic();
 
     return tap_done();
 }

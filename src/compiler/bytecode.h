@@ -36,8 +36,22 @@ typedef enum {
     OP_GET_SPECIAL = 0x18, /* u8 which -> push value */
 
     /* String and expansion operations */
-    OP_CONCAT = 0x20,       /* u16 count; strs -> result */
-    OP_EXPAND_PARAM = 0x21, /* u16 name_idx, u8 op, u8 flags; [word] -> value */
+    OP_CONCAT = 0x20, /* u16 count; strs -> result */
+    /*
+     * EXPAND_PARAM: u16 name_idx, u8 op, u8 flags
+     *
+     * Stack protocol by op:
+     *   PE_NONE (0):   -> value          (no extra stack input)
+     *   PE_DEFAULT (1):  word -> value     (pops 1: default word)
+     *   PE_ALTERNATE (2):   word -> value     (pops 1: alternate word)
+     *   PE_ASSIGN (3): word -> value     (pops 1: assign word; side effect: sets var)
+     *   PE_ERROR (4):  word -> value     (pops 1: error message word)
+     *   PE_TRIM (5):  pattern -> value  (pops 1: match pattern)
+     *   PE_REPLACE (6):  repl pattern -> value (pops 2: pattern then replacement)
+     *
+     * When flags has PE_STRLEN: -> value (no extra; returns string length)
+     */
+    OP_EXPAND_PARAM = 0x21,
     OP_EXPAND_ARITH = 0x22, /* expr_str -> value */
     OP_SPLIT_FIELDS = 0x23, /* value -> values... count */
     OP_GLOB = 0x24,         /* pattern -> values... count */
