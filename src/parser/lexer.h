@@ -115,4 +115,10 @@ bool token_is_word(const token_t *tok);
 /* Return the name of a token type (for error messages) */
 const char *token_type_name(token_type_t type);
 
+/* Parse a here-document body string for parameter/command expansion.
+ * Returns a word chain with WP_LITERAL, WP_PARAM, WP_CMDSUB nodes.
+ * Caller owns the result. */
+word_part_t *lexer_parse_heredoc_body(const char *body, const char *filename,
+                                     arena_t *arena);
+
 #endif /* OPSH_PARSER_LEXER_H */

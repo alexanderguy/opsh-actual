@@ -18,6 +18,7 @@
 typedef struct {
     size_t continue_target; /* bytecode offset of loop condition */
     plist_t break_patches;  /* plist of (size_t*) patch positions */
+    bool has_iterator;      /* true for for-loops (iterator on stack) */
 } loop_info_t;
 
 /*

@@ -8,13 +8,17 @@
 #include "foundation/util.h"
 #include "parser/ast.h"
 #include "parser/parser.h"
+#include "vm/arith.h"
 
 #include <errno.h>
 #include <fcntl.h>
+#include <fnmatch.h>
 #include <glob.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -195,6 +199,21 @@ void vm_destroy(vm_t *vm)
         }
         free(vm->exit_trap);
         vm->exit_trap = NULL;
+    }
+}
+
+void vm_set_args(vm_t *vm, int argc, char **argv)
+{
+    int i;
+    for (i = 0; i < argc; i++) {
+        char name[16];
+        snprintf(name, sizeof(name), "%d", i + 1);
+        environ_set(vm->env, name, value_string(rcstr_new(argv[i])));
+    }
+    {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d", argc);
+        environ_set(vm->env, "#", value_string(rcstr_new(buf)));
     }
 }
 
@@ -412,8 +431,109 @@ int vm_run(vm_t *vm)
                 vm_push(vm, value_string(rcstr_new(buf)));
                 break;
             }
+            case SPECIAL_HASH: {
+                variable_t *hash_var = environ_get(vm->env, "#");
+                if (hash_var != NULL && hash_var->value.type == VT_STRING) {
+                    vm_push(vm, value_string(rcstr_retain(hash_var->value.data.string)));
+                } else {
+                    vm_push(vm, value_string(rcstr_new("0")));
+                }
+                break;
+            }
+            case SPECIAL_AT: {
+                variable_t *hash_var = environ_get(vm->env, "#");
+                int count = 0;
+                if (hash_var != NULL) {
+                    count = (int)value_to_integer(&hash_var->value);
+                }
+                strbuf_t result;
+                strbuf_init(&result);
+                int pi;
+                for (pi = 1; pi <= count; pi++) {
+                    char name[16];
+                    snprintf(name, sizeof(name), "%d", pi);
+                    variable_t *pv = environ_get(vm->env, name);
+                    if (pv != NULL) {
+                        if (result.length > 0) {
+                            strbuf_append_byte(&result, ' ');
+                        }
+                        char *s = value_to_string(&pv->value);
+                        strbuf_append_str(&result, s);
+                        rcstr_release(s);
+                    }
+                }
+                {
+                    char *tmp = strbuf_detach(&result);
+                    vm_push(vm, value_string(rcstr_new(tmp)));
+                    free(tmp);
+                }
+                break;
+            }
+            case SPECIAL_STAR: {
+                variable_t *hash_var = environ_get(vm->env, "#");
+                int count = 0;
+                if (hash_var != NULL) {
+                    count = (int)value_to_integer(&hash_var->value);
+                }
+                char sep = ' ';
+                variable_t *ifs_var = environ_get(vm->env, "IFS");
+                if (ifs_var != NULL && ifs_var->value.type == VT_STRING) {
+                    if (ifs_var->value.data.string[0] != '\0') {
+                        sep = ifs_var->value.data.string[0];
+                    } else {
+                        sep = '\0';
+                    }
+                }
+                strbuf_t result;
+                strbuf_init(&result);
+                int pi;
+                for (pi = 1; pi <= count; pi++) {
+                    char name[16];
+                    snprintf(name, sizeof(name), "%d", pi);
+                    variable_t *pv = environ_get(vm->env, name);
+                    if (pv != NULL) {
+                        if (result.length > 0 && sep != '\0') {
+                            strbuf_append_byte(&result, sep);
+                        }
+                        char *s = value_to_string(&pv->value);
+                        strbuf_append_str(&result, s);
+                        rcstr_release(s);
+                    }
+                }
+                {
+                    char *tmp = strbuf_detach(&result);
+                    vm_push(vm, value_string(rcstr_new(tmp)));
+                    free(tmp);
+                }
+                break;
+            }
+            case SPECIAL_DOLLAR: {
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%d", (int)getpid());
+                vm_push(vm, value_string(rcstr_new(buf)));
+                break;
+            }
+            case SPECIAL_BANG: {
+                if (vm->last_bg_pid > 0) {
+                    char buf[32];
+                    snprintf(buf, sizeof(buf), "%d", (int)vm->last_bg_pid);
+                    vm_push(vm, value_string(rcstr_new(buf)));
+                } else {
+                    vm_push(vm, value_string(rcstr_new("")));
+                }
+                break;
+            }
+            case SPECIAL_DASH: {
+                vm_push(vm, value_string(rcstr_new(vm->option_flags)));
+                break;
+            }
+            case SPECIAL_ZERO: {
+                const char *name = vm->script_name ? vm->script_name : "opsh";
+                vm_push(vm, value_string(rcstr_new(name)));
+                break;
+            }
             default:
-                vm_push(vm, value_none());
+                vm_push(vm, value_string(rcstr_new("")));
                 break;
             }
             break;
@@ -524,27 +644,144 @@ int vm_run(vm_t *vm)
             }
             case PE_TRIM: {
                 /* ${var#pat}, ${var##pat}, ${var%pat}, ${var%%pat} */
-                value_t pattern = vm_pop(vm);
-                /* Pattern matching is deferred; for now just return the value */
-                value_destroy(&pattern);
-                if (var_val != NULL) {
-                    vm_push(vm, value_string(var_val));
-                } else {
+                value_t pattern_v = vm_pop(vm);
+                char *pat = value_to_string(&pattern_v);
+                value_destroy(&pattern_v);
+
+                if (var_val == NULL) {
+                    rcstr_release(pat);
                     vm_push(vm, value_string(rcstr_new("")));
+                    break;
                 }
+
+                size_t len = strlen(var_val);
+                bool match_head = (flags & PE_PREFIX) != 0;
+                bool longest = (flags & PE_LONGEST) != 0;
+                char *result = NULL;
+
+                if (match_head) {
+                    /* Prefix match: truncate at position i, test var[0..i] */
+                    size_t best = 0;
+                    bool found = false;
+                    size_t i;
+                    for (i = 0; i <= len; i++) {
+                        char saved = var_val[i];
+                        var_val[i] = '\0';
+                        if (fnmatch(pat, var_val, 0) == 0) {
+                            best = i;
+                            found = true;
+                            var_val[i] = saved;
+                            if (!longest) {
+                                break;
+                            }
+                        }
+                        var_val[i] = saved;
+                    }
+                    result = found ? rcstr_new(var_val + best) : rcstr_new(var_val);
+                } else {
+                    /* Suffix match: test var[i..] */
+                    size_t best = len;
+                    bool found = false;
+                    size_t i;
+                    for (i = len;; i--) {
+                        if (fnmatch(pat, var_val + i, 0) == 0) {
+                            best = i;
+                            found = true;
+                            if (!longest) {
+                                break;
+                            }
+                        }
+                        if (i == 0) {
+                            break;
+                        }
+                    }
+                    if (found) {
+                        char tmp[best + 1];
+                        memcpy(tmp, var_val, best);
+                        tmp[best] = '\0';
+                        result = rcstr_new(tmp);
+                    } else {
+                        result = rcstr_new(var_val);
+                    }
+                }
+
+                rcstr_release(var_val);
+                rcstr_release(pat);
+                vm_push(vm, value_string(result));
                 break;
             }
             case PE_REPLACE: {
                 /* ${var/pat/rep} or ${var//pat/rep} */
-                value_t replacement = vm_pop(vm);
-                value_t pattern = vm_pop(vm);
-                /* Substitution is deferred; for now just return the value */
-                value_destroy(&pattern);
-                value_destroy(&replacement);
-                if (var_val != NULL) {
-                    vm_push(vm, value_string(var_val));
-                } else {
+                value_t rep_v = vm_pop(vm);
+                value_t pat_v = vm_pop(vm);
+                char *rep = value_to_string(&rep_v);
+                char *pat = value_to_string(&pat_v);
+                value_destroy(&rep_v);
+                value_destroy(&pat_v);
+
+                if (var_val == NULL) {
+                    rcstr_release(pat);
+                    rcstr_release(rep);
                     vm_push(vm, value_string(rcstr_new("")));
+                    break;
+                }
+
+                bool replace_all = (flags & PE_GLOBAL) != 0;
+                size_t len = strlen(var_val);
+                strbuf_t result;
+                strbuf_init(&result);
+                size_t pos = 0;
+
+                while (pos <= len) {
+                    /* At each position, find the longest match */
+                    bool matched = false;
+                    size_t match_end = pos;
+                    size_t j;
+                    for (j = pos; j <= len; j++) {
+                        char saved = var_val[j];
+                        var_val[j] = '\0';
+                        if (fnmatch(pat, var_val + pos, 0) == 0) {
+                            match_end = j;
+                            matched = true;
+                        }
+                        var_val[j] = saved;
+                    }
+
+                    if (matched) {
+                        strbuf_append_str(&result, rep);
+                        if (match_end == pos) {
+                            /* Zero-length match: advance past one char */
+                            if (pos < len) {
+                                strbuf_append_byte(&result, var_val[pos]);
+                            }
+                            pos++;
+                        } else {
+                            pos = match_end;
+                        }
+                        /* Stop if we've consumed the entire string */
+                        if (pos >= len && match_end >= len) {
+                            break;
+                        }
+                        if (!replace_all) {
+                            /* Append remainder */
+                            strbuf_append_str(&result, var_val + pos);
+                            pos = len + 1;
+                        }
+                    } else {
+                        if (pos < len) {
+                            strbuf_append_byte(&result, var_val[pos]);
+                        }
+                        pos++;
+                    }
+                }
+
+                rcstr_release(var_val);
+                rcstr_release(pat);
+                rcstr_release(rep);
+                {
+                    char *tmp = strbuf_detach(&result);
+                    vm_push(vm, value_string(rcstr_new(tmp)));
+                    free(tmp);
                 }
                 break;
             }
@@ -557,61 +794,29 @@ int vm_run(vm_t *vm)
             char *expr_str = value_to_string(&expr_val);
             value_destroy(&expr_val);
 
-            /* Simple integer arithmetic evaluator */
-            /* For now, handle simple integer literals and basic +,-,*,/ */
-            int64_t result = 0;
-            char *p = expr_str;
-            char *endp;
+            arith_error_t arith_err = ARITH_OK;
+            int64_t result = arith_eval(expr_str, vm->env, &arith_err);
 
-            /* Skip whitespace */
-            while (*p == ' ' || *p == '\t') {
-                p++;
-            }
-
-            if (*p != '\0') {
-                result = strtoll(p, &endp, 10);
-                /* Handle basic binary operations */
-                while (*endp != '\0') {
-                    while (*endp == ' ' || *endp == '\t') {
-                        endp++;
-                    }
-                    char oper = *endp;
-                    if (oper != '+' && oper != '-' && oper != '*' && oper != '/' && oper != '%') {
-                        break;
-                    }
-                    endp++;
-                    while (*endp == ' ' || *endp == '\t') {
-                        endp++;
-                    }
-                    int64_t rhs = strtoll(endp, &endp, 10);
-                    switch (oper) {
-                    case '+':
-                        result += rhs;
-                        break;
-                    case '-':
-                        result -= rhs;
-                        break;
-                    case '*':
-                        result *= rhs;
-                        break;
-                    case '/':
-                        if (rhs != 0) {
-                            result /= rhs;
-                        }
-                        break;
-                    case '%':
-                        if (rhs != 0) {
-                            result %= rhs;
-                        }
-                        break;
-                    }
+            if (arith_err != ARITH_OK) {
+                const char *msg = "arithmetic syntax error";
+                if (arith_err == ARITH_ERR_DIV_ZERO) {
+                    msg = "division by zero";
+                } else if (arith_err == ARITH_ERR_DEPTH) {
+                    msg = "arithmetic recursion too deep";
                 }
+                /* Strip trailing ) left by the $((...)) lexer */
+                size_t elen = strlen(expr_str);
+                if (elen > 0 && expr_str[elen - 1] == ')') {
+                    expr_str[elen - 1] = '\0';
+                }
+                fprintf(stderr, "opsh: %s: %s\n", msg, expr_str);
+                vm->laststatus = 1;
             }
 
             rcstr_release(expr_str);
 
             char buf[32];
-            snprintf(buf, sizeof(buf), "%lld", (long long)result);
+            snprintf(buf, sizeof(buf), "%" PRId64, result);
             vm_push(vm, value_string(rcstr_new(buf)));
             break;
         }
@@ -790,9 +995,35 @@ int vm_run(vm_t *vm)
         }
 
         case OP_QUOTE_REMOVE:
-        case OP_EXPAND_TILDE:
-            /* These are handled at compile time for now; no-ops at runtime */
             break;
+
+        case OP_EXPAND_TILDE: {
+            value_t v = vm_pop(vm);
+            char *s = value_to_string(&v);
+            value_destroy(&v);
+            if (s[0] == '~' && (s[1] == '/' || s[1] == '\0')) {
+                const char *home = getenv("HOME");
+                if (home != NULL) {
+                    strbuf_t result;
+                    strbuf_init(&result);
+                    strbuf_append_str(&result, home);
+                    if (s[1] != '\0') {
+                        strbuf_append_str(&result, s + 1);
+                    }
+                    rcstr_release(s);
+                    {
+                        char *tmp = strbuf_detach(&result);
+                        vm_push(vm, value_string(rcstr_new(tmp)));
+                        free(tmp);
+                    }
+                } else {
+                    vm_push(vm, value_string(s));
+                }
+            } else {
+                vm_push(vm, value_string(s));
+            }
+            break;
+        }
 
         case OP_JMP: {
             int32_t offset = read_i32(vm);
@@ -1133,12 +1364,56 @@ int vm_run(vm_t *vm)
                     goto exec_simple_done;
                 }
 
-                fprintf(stderr, "opsh: %s: command not found\n", cmd_name);
-                rcstr_release(cmd_name);
-                exec_cmd_name = NULL;
+                /* External command: fork and execvp */
+                {
+                    char **exec_argv = xcalloc((size_t)argc + 1, sizeof(char *));
+                    exec_argv[0] = cmd_name;
+                    for (i = 1; i < argc; i++) {
+                        exec_argv[i] = value_to_string(&argv[i]);
+                    }
+                    exec_argv[argc] = NULL;
+
+                    fflush(stdout);
+                    fflush(stderr);
+                    pid_t pid = fork();
+                    if (pid < 0) {
+                        fprintf(stderr, "opsh: fork: %s\n", strerror(errno));
+                        vm->laststatus = 126;
+                    } else if (pid == 0) {
+                        /* Child: reset signals to defaults */
+                        signal_reset();
+                        execvp(exec_argv[0], exec_argv);
+                        /* execvp failed */
+                        int err = errno;
+                        fprintf(stderr, "opsh: %s: %s\n", exec_argv[0], strerror(err));
+                        _exit(err == ENOENT ? 127 : 126);
+                    } else {
+                        /* Parent: wait for child */
+                        int wstatus = 0;
+                        pid_t wp;
+                        while ((wp = waitpid(pid, &wstatus, 0)) < 0 && errno == EINTR) {
+                            /* retry */
+                        }
+                        if (wp < 0) {
+                            vm->laststatus = 127;
+                        } else if (WIFEXITED(wstatus)) {
+                            vm->laststatus = WEXITSTATUS(wstatus);
+                        } else if (WIFSIGNALED(wstatus)) {
+                            vm->laststatus = 128 + WTERMSIG(wstatus);
+                        } else {
+                            vm->laststatus = 1;
+                        }
+                    }
+
+                    for (i = 1; i < argc; i++) {
+                        rcstr_release(exec_argv[i]);
+                    }
+                    free(exec_argv);
+                    rcstr_release(cmd_name);
+                    exec_cmd_name = NULL;
+                }
             }
 
-            vm->laststatus = 127;
             for (i = 0; i < argc; i++) {
                 value_destroy(&argv[i]);
             }
@@ -1151,7 +1426,7 @@ int vm_run(vm_t *vm)
                 ev.status = vm->laststatus;
                 event_emit(vm->event_sink, &ev);
             }
-            free(exec_cmd_name);
+            rcstr_release(exec_cmd_name);
             break;
         }
 
@@ -1267,6 +1542,177 @@ int vm_run(vm_t *vm)
                 vm->loop_depth--;
             }
             break;
+
+        case OP_TEST_UNARY: {
+            uint8_t op = read_u8(vm);
+            value_t arg = vm_pop(vm);
+            char *s = value_to_string(&arg);
+            value_destroy(&arg);
+            int result = 1; /* default: false */
+
+            switch ((test_op_t)op) {
+            case TEST_F:
+            case TEST_D:
+            case TEST_E:
+            case TEST_S:
+            case TEST_R:
+            case TEST_W:
+            case TEST_X:
+            case TEST_L:
+            case TEST_P:
+            case TEST_B:
+            case TEST_C:
+            case TEST_SS:
+            case TEST_G:
+            case TEST_U:
+            case TEST_K:
+            case TEST_O:
+            case TEST_GG:
+            case TEST_NT: {
+                struct stat st;
+                int sr = (op == TEST_L) ? lstat(s, &st) : stat(s, &st);
+                if (sr == 0) {
+                    switch ((test_op_t)op) {
+                    case TEST_F:
+                        result = S_ISREG(st.st_mode) ? 0 : 1;
+                        break;
+                    case TEST_D:
+                        result = S_ISDIR(st.st_mode) ? 0 : 1;
+                        break;
+                    case TEST_E:
+                        result = 0;
+                        break;
+                    case TEST_S:
+                        result = (st.st_size > 0) ? 0 : 1;
+                        break;
+                    case TEST_R:
+                        result = (access(s, R_OK) == 0) ? 0 : 1;
+                        break;
+                    case TEST_W:
+                        result = (access(s, W_OK) == 0) ? 0 : 1;
+                        break;
+                    case TEST_X:
+                        result = (access(s, X_OK) == 0) ? 0 : 1;
+                        break;
+                    case TEST_L:
+                        result = S_ISLNK(st.st_mode) ? 0 : 1;
+                        break;
+                    case TEST_P:
+                        result = S_ISFIFO(st.st_mode) ? 0 : 1;
+                        break;
+                    case TEST_B:
+                        result = S_ISBLK(st.st_mode) ? 0 : 1;
+                        break;
+                    case TEST_C:
+                        result = S_ISCHR(st.st_mode) ? 0 : 1;
+                        break;
+                    case TEST_SS:
+                        result = S_ISSOCK(st.st_mode) ? 0 : 1;
+                        break;
+                    case TEST_G:
+                        result = (st.st_mode & S_ISGID) ? 0 : 1;
+                        break;
+                    case TEST_U:
+                        result = (st.st_mode & S_ISUID) ? 0 : 1;
+                        break;
+                    case TEST_K:
+                        result = (st.st_mode & S_ISVTX) ? 0 : 1;
+                        break;
+                    case TEST_O:
+                        result = (st.st_uid == geteuid()) ? 0 : 1;
+                        break;
+                    case TEST_GG:
+                        result = (st.st_gid == getegid()) ? 0 : 1;
+                        break;
+                    case TEST_NT:
+                        result = 0; /* -N: always true if file exists */
+                        break;
+                    default:
+                        break;
+                    }
+                }
+                break;
+            }
+            case TEST_T: {
+                int fd_num = (int)strtol(s, NULL, 10);
+                result = isatty(fd_num) ? 0 : 1;
+                break;
+            }
+            case TEST_N:
+                result = (s[0] != '\0') ? 0 : 1;
+                break;
+            case TEST_Z:
+                result = (s[0] == '\0') ? 0 : 1;
+                break;
+            default:
+                break;
+            }
+
+            free(s);
+            vm->laststatus = result;
+            break;
+        }
+
+        case OP_TEST_BINARY: {
+            uint8_t op = read_u8(vm);
+            value_t rhs_v = vm_pop(vm);
+            value_t lhs_v = vm_pop(vm);
+            char *lhs = value_to_string(&lhs_v);
+            char *rhs = value_to_string(&rhs_v);
+            value_destroy(&lhs_v);
+            value_destroy(&rhs_v);
+            int result = 1;
+
+            switch ((test_op_t)op) {
+            case TEST_SEQ:
+                /* In [[ ]], == does glob pattern matching (rhs is pattern) */
+                result = (fnmatch(rhs, lhs, 0) == 0) ? 0 : 1;
+                break;
+            case TEST_SNE:
+                result = (fnmatch(rhs, lhs, 0) != 0) ? 0 : 1;
+                break;
+            case TEST_EQ:
+                result = (strtoll(lhs, NULL, 10) == strtoll(rhs, NULL, 10)) ? 0 : 1;
+                break;
+            case TEST_NE:
+                result = (strtoll(lhs, NULL, 10) != strtoll(rhs, NULL, 10)) ? 0 : 1;
+                break;
+            case TEST_LT:
+                result = (strtoll(lhs, NULL, 10) < strtoll(rhs, NULL, 10)) ? 0 : 1;
+                break;
+            case TEST_LE:
+                result = (strtoll(lhs, NULL, 10) <= strtoll(rhs, NULL, 10)) ? 0 : 1;
+                break;
+            case TEST_GT:
+                result = (strtoll(lhs, NULL, 10) > strtoll(rhs, NULL, 10)) ? 0 : 1;
+                break;
+            case TEST_GE:
+                result = (strtoll(lhs, NULL, 10) >= strtoll(rhs, NULL, 10)) ? 0 : 1;
+                break;
+            case TEST_FNT:
+            case TEST_FOT:
+            case TEST_FEF: {
+                struct stat st1, st2;
+                if (stat(lhs, &st1) == 0 && stat(rhs, &st2) == 0) {
+                    if (op == TEST_FNT) {
+                        result = (st1.st_mtime > st2.st_mtime) ? 0 : 1;
+                    } else if (op == TEST_FOT) {
+                        result = (st1.st_mtime < st2.st_mtime) ? 0 : 1;
+                    } else {
+                        result = (st1.st_dev == st2.st_dev && st1.st_ino == st2.st_ino) ? 0 : 1;
+                    }
+                }
+                break;
+            }
+            default:
+                break;
+            }
+
+            free(lhs);
+            free(rhs);
+            vm->laststatus = result;
+            break;
+        }
 
         case OP_NEGATE_STATUS:
             vm->laststatus = (vm->laststatus == 0) ? 1 : 0;
@@ -1405,6 +1851,56 @@ int vm_run(vm_t *vm)
                 char *tmp = strbuf_detach(&captured);
                 vm_push(vm, value_string(rcstr_new(tmp)));
                 free(tmp);
+            }
+            break;
+        }
+
+        case OP_SUBSHELL: {
+            uint32_t sub_offset = (uint32_t)read_u8(vm);
+            sub_offset |= (uint32_t)read_u8(vm) << 8;
+            sub_offset |= (uint32_t)read_u8(vm) << 16;
+            sub_offset |= (uint32_t)read_u8(vm) << 24;
+
+            fflush(stdout);
+            fflush(stderr);
+
+            pid_t pid = fork();
+            if (pid < 0) {
+                fprintf(stderr, "opsh: fork failed\n");
+                vm->laststatus = 1;
+                break;
+            }
+
+            if (pid == 0) {
+                /* Child: run the subshell body */
+                signal_reset();
+                free(vm->exit_trap);
+                vm->exit_trap = NULL;
+                vm->event_sink = NULL;
+                vm->ip = (size_t)sub_offset;
+                vm->halted = false;
+                int child_status = vm_run(vm);
+                fflush(stdout);
+                fflush(stderr);
+                _exit(child_status);
+            }
+
+            /* Parent: wait for child */
+            {
+                int wstatus = 0;
+                pid_t wp;
+                while ((wp = waitpid(pid, &wstatus, 0)) < 0 && errno == EINTR) {
+                    /* retry */
+                }
+                if (wp < 0) {
+                    vm->laststatus = 127;
+                } else if (WIFEXITED(wstatus)) {
+                    vm->laststatus = WEXITSTATUS(wstatus);
+                } else if (WIFSIGNALED(wstatus)) {
+                    vm->laststatus = 128 + WTERMSIG(wstatus);
+                } else {
+                    vm->laststatus = 1;
+                }
             }
             break;
         }
