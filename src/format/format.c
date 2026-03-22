@@ -8,12 +8,24 @@
 #include <string.h>
 #include <unistd.h>
 
+#define MAX_PENDING_HEREDOC_FMT 8
+
+/* Deferred heredoc body for emission after the command line */
+typedef struct {
+    const word_part_t *body;
+    const char *delim;             /* stripped delimiter string */
+    const word_part_t *delim_word; /* delimiter word (for fallback) */
+    bool expand;                   /* true if body should re-escape specials */
+} pending_heredoc_fmt_t;
+
 /* Formatter state */
 typedef struct {
     strbuf_t *out;
     const format_options_t *opts;
     int depth;
     const comment_t *next_comment; /* next comment to emit (walks the list) */
+    pending_heredoc_fmt_t pending_heredocs[MAX_PENDING_HEREDOC_FMT];
+    int pending_heredoc_count;
 } fmt_t;
 
 static void emit_indent(fmt_t *f)
@@ -256,6 +268,47 @@ static void format_word_unit(fmt_t *f, const word_part_t *w)
     }
 }
 
+/* Emit a heredoc body, re-escaping $, `, \ in WP_LITERAL nodes if expanding */
+static void format_heredoc_body(fmt_t *f, const word_part_t *w, bool expand)
+{
+    while (w != NULL) {
+        if (w->type == WP_LITERAL && w->part.string != NULL) {
+            if (expand) {
+                const char *p = w->part.string;
+                while (*p) {
+                    if (*p == '$' || *p == '`' || *p == '\\') {
+                        emit_char(f, '\\');
+                    }
+                    emit_char(f, *p);
+                    p++;
+                }
+            } else {
+                emit(f, w->part.string);
+            }
+        } else {
+            format_word_unit(f, w);
+        }
+        w = w->next;
+    }
+}
+
+/* Flush any deferred heredoc bodies */
+static void flush_heredocs(fmt_t *f)
+{
+    int i;
+    for (i = 0; i < f->pending_heredoc_count; i++) {
+        pending_heredoc_fmt_t *ph = &f->pending_heredocs[i];
+        emit(f, "\n");
+        format_heredoc_body(f, ph->body, ph->expand);
+        if (ph->delim != NULL) {
+            emit(f, ph->delim);
+        } else {
+            format_word(f, ph->delim_word);
+        }
+    }
+    f->pending_heredoc_count = 0;
+}
+
 static void format_word(fmt_t *f, const word_part_t *w)
 {
     bool in_quote = false;
@@ -350,27 +403,23 @@ static void format_redir(fmt_t *f, const io_redir_t *r)
         case REDIR_HEREDOC:
             emit(f, "<< ");
             format_word(f, r->target);
-            if (r->heredoc_body != NULL) {
-                emit(f, "\n");
-                format_word(f, r->heredoc_body);
-                if (r->heredoc_delim != NULL) {
-                    emit(f, r->heredoc_delim);
-                } else {
-                    format_word(f, r->target);
-                }
+            if (r->heredoc_body != NULL && f->pending_heredoc_count < MAX_PENDING_HEREDOC_FMT) {
+                pending_heredoc_fmt_t *ph = &f->pending_heredocs[f->pending_heredoc_count++];
+                ph->body = r->heredoc_body;
+                ph->delim = r->heredoc_delim;
+                ph->delim_word = r->target;
+                ph->expand = r->heredoc_expand;
             }
             break;
         case REDIR_HEREDOC_STRIP:
             emit(f, "<<- ");
             format_word(f, r->target);
-            if (r->heredoc_body != NULL) {
-                emit(f, "\n");
-                format_word(f, r->heredoc_body);
-                if (r->heredoc_delim != NULL) {
-                    emit(f, r->heredoc_delim);
-                } else {
-                    format_word(f, r->target);
-                }
+            if (r->heredoc_body != NULL && f->pending_heredoc_count < MAX_PENDING_HEREDOC_FMT) {
+                pending_heredoc_fmt_t *ph = &f->pending_heredocs[f->pending_heredoc_count++];
+                ph->body = r->heredoc_body;
+                ph->delim = r->heredoc_delim;
+                ph->delim_word = r->target;
+                ph->expand = r->heredoc_expand;
             }
             break;
         case REDIR_HERESTR:
@@ -676,6 +725,7 @@ static void format_and_or(fmt_t *f, const and_or_t *pl)
         first = false;
         cmd = cmd->next;
     }
+    flush_heredocs(f);
 }
 
 /*
@@ -713,6 +763,7 @@ void format_ast(strbuf_t *out, const sh_list_t *ast, const comment_t *comments,
                 const format_options_t *opts)
 {
     fmt_t f;
+    memset(&f, 0, sizeof(f));
     f.out = out;
     f.opts = opts;
     f.depth = 0;
