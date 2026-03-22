@@ -845,7 +845,6 @@ int vm_run(vm_t *vm)
                     if (best_start < len) {
                         strbuf_append_bytes(&result, var_val, best_start);
                         strbuf_append_str(&result, rep);
-                        found = true;
                     } else {
                         strbuf_append_str(&result, var_val);
                     }
@@ -1990,8 +1989,43 @@ int vm_run(vm_t *vm)
             }
             case TEST_REGEX: {
                 regex_t re;
-                if (regcomp(&re, rhs, REG_EXTENDED | REG_NOSUB) == 0) {
-                    result = (regexec(&re, lhs, 0, NULL, 0) == 0) ? 0 : 1;
+                if (regcomp(&re, rhs, REG_EXTENDED) == 0) {
+                    size_t nmatch = re.re_nsub + 1;
+                    regmatch_t *matches = xcalloc(nmatch, sizeof(regmatch_t));
+                    if (regexec(&re, lhs, nmatch, matches, 0) == 0) {
+                        result = 0;
+                        /* Populate BASH_REMATCH array */
+                        int count = 0;
+                        size_t mi;
+                        for (mi = 0; mi < nmatch; mi++) {
+                            if (matches[mi].rm_so >= 0) {
+                                count = (int)mi + 1;
+                            }
+                        }
+                        char **elements = xcalloc(count ? (size_t)count : 1, sizeof(char *));
+                        for (mi = 0; mi < (size_t)count; mi++) {
+                            if (matches[mi].rm_so >= 0) {
+                                size_t mlen = (size_t)(matches[mi].rm_eo - matches[mi].rm_so);
+                                elements[mi] = rcstr_from_buf(lhs + matches[mi].rm_so, mlen);
+                            } else {
+                                elements[mi] = rcstr_new("");
+                            }
+                        }
+                        value_t arr;
+                        arr.type = VT_ARRAY;
+                        arr.data.array.elements = elements;
+                        arr.data.array.count = count;
+                        environ_assign(vm->env, "BASH_REMATCH", arr);
+                    } else {
+                        result = 1;
+                        /* Clear BASH_REMATCH on non-match */
+                        value_t empty_arr;
+                        empty_arr.type = VT_ARRAY;
+                        empty_arr.data.array.elements = NULL;
+                        empty_arr.data.array.count = 0;
+                        environ_assign(vm->env, "BASH_REMATCH", empty_arr);
+                    }
+                    free(matches);
                     regfree(&re);
                 } else {
                     fprintf(stderr, "opsh: invalid regex: %s\n", rhs);
