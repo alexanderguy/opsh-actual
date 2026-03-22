@@ -247,14 +247,19 @@ int vm_exec_string(vm_t *vm, const char *source, const char *label)
 
     int status = vm_run(&sub);
 
-    /* Propagate any new functions back to the caller */
-    vm->func_table = sub.func_table;
-    vm->func_count = sub.func_count;
+    /* Propagate state back to the caller.
+     * Only propagate halted if exit was explicitly called (not just
+     * reaching the end of the code via OP_HALT). */
     vm->laststatus = sub.laststatus;
+    if (sub.exit_requested) {
+        vm->exit_requested = true;
+        vm_exit(vm, sub.laststatus);
+    }
+    if (sub.return_requested) {
+        vm->return_requested = true;
+    }
 
-    sub.env = NULL;        /* don't double-free */
-    sub.func_table = NULL; /* ownership transferred */
-    sub.func_count = 0;
+    sub.env = NULL; /* don't double-free */
     vm_destroy(&sub);
     image_free(img);
 
@@ -1242,12 +1247,13 @@ int vm_run(vm_t *vm)
                 }
                 /* Special cases */
                 if (strcmp(builtin_table[builtin_idx].name, "exit") == 0) {
+                    vm->exit_requested = true;
                     vm_exit(vm, status);
                 }
                 /* return builtin triggers function return */
                 if (vm->return_requested) {
-                    vm->return_requested = false;
                     if (vm->call_depth > 0) {
+                        vm->return_requested = false;
                         call_frame_t *frame = &vm->call_stack[--vm->call_depth];
                         while (vm->stack_top > frame->saved_stack_base) {
                             value_t v = vm_pop(vm);
@@ -1259,6 +1265,8 @@ int vm_run(vm_t *vm)
                         environ_destroy(func_env);
                         vm->ip = frame->return_ip;
                     } else {
+                        /* At top level: halt but keep return_requested
+                         * so vm_exec_string can propagate it */
                         vm->halted = true;
                     }
                 }
@@ -1360,7 +1368,25 @@ int vm_run(vm_t *vm)
                     int status = builtin_table[bi].fn(vm, argc, argv);
                     vm->laststatus = status;
                     if (strcmp(builtin_table[bi].name, "exit") == 0) {
+                        vm->exit_requested = true;
                         vm_exit(vm, status);
+                    }
+                    if (vm->return_requested) {
+                        vm->return_requested = false;
+                        if (vm->call_depth > 0) {
+                            call_frame_t *frame = &vm->call_stack[--vm->call_depth];
+                            while (vm->stack_top > frame->saved_stack_base) {
+                                value_t v = vm_pop(vm);
+                                value_destroy(&v);
+                            }
+                            vm->loop_depth = frame->saved_loop_depth;
+                            environ_t *func_env = vm->env;
+                            vm->env = func_env->parent;
+                            environ_destroy(func_env);
+                            vm->ip = frame->return_ip;
+                        } else {
+                            vm->halted = true;
+                        }
                     }
                     for (i = 0; i < argc; i++) {
                         value_destroy(&argv[i]);

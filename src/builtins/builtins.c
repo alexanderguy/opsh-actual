@@ -1,5 +1,6 @@
 #include "builtins/builtins.h"
 
+#include "exec/signal.h"
 #include "exec/variable.h"
 #include "foundation/rcstr.h"
 #include "foundation/strbuf.h"
@@ -13,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static void write_fd1(const char *data, size_t len)
@@ -702,17 +704,206 @@ static int builtin_trap(vm_t *vm, int argc, value_t *argv)
     return 0;
 }
 
+static int builtin_eval(vm_t *vm, int argc, value_t *argv)
+{
+    if (argc <= 1) {
+        return 0;
+    }
+
+    /* Concatenate all arguments with spaces */
+    strbuf_t cmd;
+    strbuf_init(&cmd);
+    int i;
+    for (i = 1; i < argc; i++) {
+        if (i > 1) {
+            strbuf_append_byte(&cmd, ' ');
+        }
+        char *s = value_to_string(&argv[i]);
+        strbuf_append_str(&cmd, s);
+        free(s);
+    }
+
+    char *str = strbuf_detach(&cmd);
+    int status = vm_exec_string(vm, str, "eval");
+    free(str);
+    return status;
+}
+
+static int builtin_dot(vm_t *vm, int argc, value_t *argv)
+{
+    if (argc < 2) {
+        fprintf(stderr, "opsh: .: filename argument required\n");
+        return 2;
+    }
+
+    char *filename = value_to_string(&argv[1]);
+    char *source = read_file(filename);
+    if (source == NULL) {
+        fprintf(stderr, "opsh: .: %s: not found\n", filename);
+        free(filename);
+        return 1;
+    }
+
+    int status = vm_exec_string(vm, source, filename);
+    free(source);
+    free(filename);
+    return status;
+}
+
+static int builtin_command(vm_t *vm, int argc, value_t *argv)
+{
+    if (argc < 2) {
+        return 0;
+    }
+
+    char *arg1 = value_to_string(&argv[1]);
+
+    /* command -v name: print how name would be resolved */
+    if (strcmp(arg1, "-v") == 0) {
+        free(arg1);
+        if (argc < 3) {
+            return 1;
+        }
+        char *name = value_to_string(&argv[2]);
+        int bi = builtin_lookup(name);
+        if (bi >= 0) {
+            strbuf_t out;
+            strbuf_init(&out);
+            strbuf_append_str(&out, name);
+            strbuf_append_byte(&out, '\n');
+            write_fd1(out.contents, out.length);
+            strbuf_destroy(&out);
+            free(name);
+            return 0;
+        }
+        /* Check functions */
+        int fi;
+        for (fi = 0; fi < vm->func_count; fi++) {
+            if (strcmp(vm->func_table[fi].name, name) == 0) {
+                strbuf_t out;
+                strbuf_init(&out);
+                strbuf_append_str(&out, name);
+                strbuf_append_byte(&out, '\n');
+                write_fd1(out.contents, out.length);
+                strbuf_destroy(&out);
+                free(name);
+                return 0;
+            }
+        }
+        /* Search PATH for external command */
+        {
+            const char *path_env = getenv("PATH");
+            if (path_env != NULL) {
+                const char *p = path_env;
+                while (*p) {
+                    const char *sep = strchr(p, ':');
+                    size_t dir_len = sep ? (size_t)(sep - p) : strlen(p);
+                    if (dir_len > 0) {
+                        char path[4096];
+                        snprintf(path, sizeof(path), "%.*s/%s", (int)dir_len, p, name);
+                        if (access(path, X_OK) == 0) {
+                            strbuf_t out;
+                            strbuf_init(&out);
+                            strbuf_append_str(&out, path);
+                            strbuf_append_byte(&out, '\n');
+                            write_fd1(out.contents, out.length);
+                            strbuf_destroy(&out);
+                            free(name);
+                            return 0;
+                        }
+                    }
+                    p = sep ? sep + 1 : p + strlen(p);
+                }
+            }
+        }
+        free(name);
+        return 1;
+    }
+
+    free(arg1);
+
+    /* command name args...: run bypassing function lookup */
+    char *cmd_name = value_to_string(&argv[1]);
+
+    /* Try builtins first */
+    int bi = builtin_lookup(cmd_name);
+    if (bi >= 0) {
+        const char *bname = builtin_table[bi].name;
+        free(cmd_name);
+        int status = builtin_table[bi].fn(vm, argc - 1, argv + 1);
+        vm->laststatus = status;
+        if (strcmp(bname, "exit") == 0) {
+            vm->exit_requested = true;
+            vm_exit(vm, status);
+        }
+        return status;
+    }
+
+    /* External command: fork/execvp */
+    {
+        int i;
+        char **exec_argv = xcalloc((size_t)argc, sizeof(char *));
+        exec_argv[0] = cmd_name;
+        for (i = 2; i < argc; i++) {
+            exec_argv[i - 1] = value_to_string(&argv[i]);
+        }
+        exec_argv[argc - 1] = NULL;
+
+        fflush(stdout);
+        fflush(stderr);
+        pid_t pid = fork();
+        if (pid < 0) {
+            fprintf(stderr, "opsh: fork: %s\n", strerror(errno));
+            for (i = 1; i < argc - 1; i++) {
+                free(exec_argv[i]);
+            }
+            free(exec_argv);
+            free(cmd_name);
+            return 126;
+        }
+        if (pid == 0) {
+            signal_reset();
+            execvp(exec_argv[0], exec_argv);
+            int err = errno;
+            fprintf(stderr, "opsh: %s: %s\n", exec_argv[0], strerror(err));
+            _exit(err == ENOENT ? 127 : 126);
+        }
+
+        /* Parent */
+        int wstatus = 0;
+        pid_t wp;
+        while ((wp = waitpid(pid, &wstatus, 0)) < 0 && errno == EINTR) {
+            /* retry */
+        }
+        int status;
+        if (wp < 0) {
+            status = 127;
+        } else if (WIFEXITED(wstatus)) {
+            status = WEXITSTATUS(wstatus);
+        } else if (WIFSIGNALED(wstatus)) {
+            status = 128 + WTERMSIG(wstatus);
+        } else {
+            status = 1;
+        }
+
+        for (i = 1; i < argc - 1; i++) {
+            free(exec_argv[i]);
+        }
+        free(exec_argv);
+        free(cmd_name);
+        return status;
+    }
+}
+
 const builtin_entry_t builtin_table[] = {
-    {"echo", builtin_echo},     {"exit", builtin_exit},
-    {"true", builtin_true},     {"false", builtin_false},
-    {":", builtin_true},        {"cd", builtin_cd},
-    {"pwd", builtin_pwd},       {"export", builtin_export},
-    {"unset", builtin_unset},   {"readonly", builtin_readonly},
-    {"local", builtin_local},   {"shift", builtin_shift},
-    {"test", builtin_test},     {"[", builtin_test},
-    {"printf", builtin_printf}, {"read", builtin_read},
-    {"return", builtin_return}, {"type", builtin_type},
-    {"trap", builtin_trap},     {NULL, NULL},
+    {"echo", builtin_echo},         {"exit", builtin_exit},       {"true", builtin_true},
+    {"false", builtin_false},       {":", builtin_true},          {"cd", builtin_cd},
+    {"pwd", builtin_pwd},           {"export", builtin_export},   {"unset", builtin_unset},
+    {"readonly", builtin_readonly}, {"local", builtin_local},     {"shift", builtin_shift},
+    {"test", builtin_test},         {"[", builtin_test},          {"printf", builtin_printf},
+    {"read", builtin_read},         {"return", builtin_return},   {"type", builtin_type},
+    {"trap", builtin_trap},         {"eval", builtin_eval},       {".", builtin_dot},
+    {"source", builtin_dot},        {"command", builtin_command}, {NULL, NULL},
 };
 
 int builtin_lookup(const char *name)
