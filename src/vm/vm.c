@@ -217,6 +217,50 @@ void vm_set_args(vm_t *vm, int argc, char **argv)
     }
 }
 
+int vm_exec_string(vm_t *vm, const char *source, const char *label)
+{
+    parser_t p;
+    parser_init(&p, source, label);
+    sh_list_t *ast = parser_parse(&p);
+
+    if (ast == NULL || parser_error_count(&p) > 0) {
+        sh_list_free(ast);
+        parser_destroy(&p);
+        return 1;
+    }
+
+    bytecode_image_t *img = compile(ast, label);
+    sh_list_free(ast);
+    parser_destroy(&p);
+
+    if (img == NULL) {
+        return 1;
+    }
+
+    vm_t sub;
+    vm_init(&sub, img);
+    /* Share environment and function table with caller */
+    environ_destroy(sub.env);
+    sub.env = vm->env;
+    sub.func_table = vm->func_table;
+    sub.func_count = vm->func_count;
+
+    int status = vm_run(&sub);
+
+    /* Propagate any new functions back to the caller */
+    vm->func_table = sub.func_table;
+    vm->func_count = sub.func_count;
+    vm->laststatus = sub.laststatus;
+
+    sub.env = NULL;        /* don't double-free */
+    sub.func_table = NULL; /* ownership transferred */
+    sub.func_count = 0;
+    vm_destroy(&sub);
+    image_free(img);
+
+    return status;
+}
+
 void vm_exit(vm_t *vm, int status)
 {
     vm->laststatus = status;
@@ -226,27 +270,7 @@ void vm_exit(vm_t *vm, int status)
     if (vm->exit_trap != NULL && vm->exit_trap[0] != '\0') {
         char *trap_cmd = vm->exit_trap;
         vm->exit_trap = NULL; /* prevent re-entry */
-
-        parser_t p;
-        parser_init(&p, trap_cmd, "EXIT trap");
-        sh_list_t *ast = parser_parse(&p);
-        if (ast != NULL && parser_error_count(&p) == 0) {
-            bytecode_image_t *trap_img = compile(ast, "EXIT trap");
-            if (trap_img != NULL) {
-                /* Run the trap in a fresh VM to avoid state corruption */
-                vm_t trap_vm;
-                vm_init(&trap_vm, trap_img);
-                /* Inherit the current environment */
-                environ_destroy(trap_vm.env);
-                trap_vm.env = vm->env;
-                vm_run(&trap_vm);
-                trap_vm.env = NULL; /* don't double-free */
-                vm_destroy(&trap_vm);
-                image_free(trap_img);
-            }
-        }
-        sh_list_free(ast);
-        parser_destroy(&p);
+        vm_exec_string(vm, trap_cmd, "EXIT trap");
         free(trap_cmd);
     }
 
@@ -334,26 +358,7 @@ int vm_run(vm_t *vm)
                 /* Execute the trap handler */
                 char *handler = vm->trap_handlers[sig];
                 if (handler[0] != '\0') {
-                    /* Non-empty handler: parse and execute */
-                    parser_t trap_p;
-                    parser_init(&trap_p, handler, "trap");
-                    sh_list_t *trap_ast = parser_parse(&trap_p);
-                    if (trap_ast != NULL && parser_error_count(&trap_p) == 0) {
-                        bytecode_image_t *trap_img = compile(trap_ast, "trap");
-                        if (trap_img != NULL) {
-                            vm_t trap_vm;
-                            vm_init(&trap_vm, trap_img);
-                            environ_destroy(trap_vm.env);
-                            trap_vm.env = vm->env;
-                            vm_run(&trap_vm);
-                            vm->laststatus = trap_vm.laststatus;
-                            trap_vm.env = NULL;
-                            vm_destroy(&trap_vm);
-                            image_free(trap_img);
-                        }
-                    }
-                    sh_list_free(trap_ast);
-                    parser_destroy(&trap_p);
+                    vm_exec_string(vm, handler, "trap");
                 }
                 /* Empty handler ("") means ignore the signal */
             } else if (sig == SIGINT || sig == SIGTERM) {

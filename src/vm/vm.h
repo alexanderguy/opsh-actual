@@ -155,6 +155,11 @@ void vm_destroy(vm_t *vm);
 /* Set positional parameters ($1..$N, $#) from command-line args */
 void vm_set_args(vm_t *vm, int argc, char **argv);
 
+/* Parse, compile, and execute a string in the current VM's environment.
+ * Functions defined in the string become visible to the caller.
+ * Returns the exit status. */
+int vm_exec_string(vm_t *vm, const char *source, const char *label);
+
 /* Execute until HALT or error. Returns the exit status. */
 int vm_run(vm_t *vm);
 
