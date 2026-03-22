@@ -712,27 +712,35 @@ static void compile_for(compiler_t *cc, command_t *cmd)
     plist_t *words = &cmd->u.for_clause.wordlist;
     uint16_t var_idx = image_add_const(cc->image, varname);
 
-    /* Push all word values with splitting/globbing as groups */
-    for (i = 0; i < words->length; i++) {
-        word_part_t *w = plist_get(words, i);
-        compile_word(cc, w, cmd->lineno);
+    if (words->length == 0) {
+        /* for x; do ... done -- iterate over $@ */
+        image_emit_u8(cc->image, OP_GET_SPECIAL);
+        image_emit_u8(cc->image, (uint8_t)SPECIAL_AT);
+        image_emit_u8(cc->image, OP_SPLIT_FIELDS);
+        image_emit_u8(cc->image, OP_INIT_ITER);
+    } else {
+        /* Push all word values with splitting/globbing as groups */
+        for (i = 0; i < words->length; i++) {
+            word_part_t *w = plist_get(words, i);
+            compile_word(cc, w, cmd->lineno);
 
-        if (word_needs_split(w)) {
-            image_emit_u8(cc->image, OP_SPLIT_FIELDS);
-        } else if (word_has_glob(w)) {
-            image_emit_u8(cc->image, OP_GLOB);
-        } else {
-            image_emit_u8(cc->image, OP_PUSH_INT);
-            image_emit_i32(cc->image, 1);
+            if (word_needs_split(w)) {
+                image_emit_u8(cc->image, OP_SPLIT_FIELDS);
+            } else if (word_has_glob(w)) {
+                image_emit_u8(cc->image, OP_GLOB);
+            } else {
+                image_emit_u8(cc->image, OP_PUSH_INT);
+                image_emit_i32(cc->image, 1);
+            }
         }
-    }
 
-    /* Collect all word groups and create iterator */
-    image_emit_u8(cc->image, OP_PUSH_INT);
-    image_emit_i32(cc->image, (int32_t)words->length);
-    image_emit_u8(cc->image, OP_COLLECT_WORDS);
-    /* Stack now has: values... total_count. Use as INIT_ITER group. */
-    image_emit_u8(cc->image, OP_INIT_ITER);
+        /* Collect all word groups and create iterator */
+        image_emit_u8(cc->image, OP_PUSH_INT);
+        image_emit_i32(cc->image, (int32_t)words->length);
+        image_emit_u8(cc->image, OP_COLLECT_WORDS);
+        /* Stack now has: values... total_count. Use as INIT_ITER group. */
+        image_emit_u8(cc->image, OP_INIT_ITER);
+    }
     image_emit_u16(cc->image, 1); /* 1 group */
 
     /* Loop start */
