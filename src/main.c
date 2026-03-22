@@ -2,6 +2,7 @@
 #include "compiler/compiler.h"
 #include "exec/signal.h"
 #include "foundation/util.h"
+#include "lsp/lsp.h"
 #include "parser/parser.h"
 #include "vm/image_io.h"
 #include "vm/vm.h"
@@ -120,7 +121,9 @@ int main(int argc, char *argv[])
     int i;
 
     for (i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "build") == 0 && i == 1) {
+        if (strcmp(argv[i], "lsp") == 0 && i == 1) {
+            return lsp_main();
+        } else if (strcmp(argv[i], "build") == 0 && i == 1) {
             do_build = 1;
         } else if (strcmp(argv[i], "--agent-stdio") == 0) {
             agent_stdio = 1;

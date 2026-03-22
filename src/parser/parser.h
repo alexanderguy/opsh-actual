@@ -5,6 +5,16 @@
 #include "parser/ast.h"
 #include "parser/lexer.h"
 
+#define MAX_PARSE_ERRORS 64
+
+/*
+ * A collected parse error.
+ */
+typedef struct {
+    unsigned int lineno;
+    char *message;
+} parse_error_t;
+
 /*
  * Parser state
  */
@@ -13,6 +23,7 @@ typedef struct {
     arena_t arena;
     int error_count;
     const char *filename;
+    parse_error_t errors[MAX_PARSE_ERRORS];
 } parser_t;
 
 /* Initialize a parser for the given source string */

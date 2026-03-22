@@ -23,10 +23,11 @@ EXEC_SRCS = src/exec/variable.c src/exec/signal.c
 BUILTIN_SRCS = src/builtins/builtins.c
 COMPILER_SRCS = src/compiler/compiler.c
 AGENT_SRCS = src/agent/event.c
+LSP_SRCS = src/lsp/lsp.c
 MAIN_SRCS = src/main.c
 
 ALL_SRCS = $(FOUNDATION_SRCS) $(PARSER_SRCS) $(VM_SRCS) $(EXEC_SRCS) \
-           $(BUILTIN_SRCS) $(COMPILER_SRCS) $(AGENT_SRCS) $(MAIN_SRCS)
+           $(BUILTIN_SRCS) $(COMPILER_SRCS) $(AGENT_SRCS) $(LSP_SRCS) $(MAIN_SRCS)
 ALL_OBJS = $(ALL_SRCS:src/%.c=$(BUILD)/%.o)
 DEPS = $(ALL_OBJS:.o=.d)
 
@@ -38,10 +39,11 @@ EXEC_OBJS = $(EXEC_SRCS:src/%.c=$(BUILD)/%.o)
 BUILTIN_OBJS = $(BUILTIN_SRCS:src/%.c=$(BUILD)/%.o)
 COMPILER_OBJS = $(COMPILER_SRCS:src/%.c=$(BUILD)/%.o)
 AGENT_OBJS = $(AGENT_SRCS:src/%.c=$(BUILD)/%.o)
+LSP_OBJS = $(LSP_SRCS:src/%.c=$(BUILD)/%.o)
 
 # All non-main objects (for test linking)
 LIB_OBJS = $(FOUNDATION_OBJS) $(PARSER_OBJS) $(VM_OBJS) $(EXEC_OBJS) \
-           $(BUILTIN_OBJS) $(COMPILER_OBJS) $(AGENT_OBJS)
+           $(BUILTIN_OBJS) $(COMPILER_OBJS) $(AGENT_OBJS) $(LSP_OBJS)
 
 # Test sources
 TEST_TAP_SRC = tests/test_tap.c
