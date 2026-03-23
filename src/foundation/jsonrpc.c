@@ -21,7 +21,10 @@ char *jsonrpc_read_message(FILE *in)
             break;
         }
         if (strncmp(line, "Content-Length:", 15) == 0) {
-            content_length = atoi(line + 15);
+            long val = strtol(line + 15, NULL, 10);
+            if (val > 0 && val <= 10 * 1024 * 1024) {
+                content_length = (int)val;
+            }
         }
     }
 
@@ -70,10 +73,12 @@ void jsonrpc_send_error(FILE *out, int64_t id, int code, const char *message)
     json_begin_object(&buf);
     json_key_string(&buf, "jsonrpc", "2.0");
     json_key_int(&buf, "id", id);
-    strbuf_append_str(&buf, ",\"error\":{");
+    strbuf_append_str(&buf, ",\"error\":");
+    json_begin_object(&buf);
     json_key_int(&buf, "code", code);
     json_key_string(&buf, "message", message);
-    strbuf_append_str(&buf, "}}");
+    json_end_object(&buf);
+    json_end_object(&buf);
     jsonrpc_send(out, buf.contents);
     strbuf_destroy(&buf);
 }
