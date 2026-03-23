@@ -1704,6 +1704,20 @@ int vm_run(vm_t *vm)
                     }
                     exec_argv[argc] = NULL;
 
+                    if (vm->no_fork) {
+                        vm->laststatus = 127;
+                        for (i = 1; i < argc; i++) {
+                            rcstr_release(exec_argv[i]);
+                        }
+                        free(exec_argv);
+                        rcstr_release(cmd_name);
+                        exec_cmd_name = NULL;
+                        for (i = 0; i < argc; i++) {
+                            value_destroy(&argv[i]);
+                        }
+                        free(argv);
+                        goto exec_simple_done;
+                    }
                     fflush(stdout);
                     fflush(stderr);
                     pid_t pid = fork();
@@ -2078,6 +2092,13 @@ int vm_run(vm_t *vm)
                 break;
             }
 
+            if (vm->no_fork) {
+                close(pipefd[0]);
+                close(pipefd[1]);
+                vm_push(vm, value_string(rcstr_new("")));
+                vm->laststatus = 127;
+                break;
+            }
 
             /* Flush stdio before forking to avoid duplicated buffered output */
             fflush(stdout);
@@ -2165,6 +2186,11 @@ int vm_run(vm_t *vm)
             sub_offset |= (uint32_t)read_u8(vm) << 16;
             sub_offset |= (uint32_t)read_u8(vm) << 24;
 
+            if (vm->no_fork) {
+                vm->laststatus = 127;
+                break;
+            }
+
             fflush(stdout);
             fflush(stderr);
 
@@ -2222,6 +2248,11 @@ int vm_run(vm_t *vm)
                 ev.id = bg_cmd_id;
                 ev.name = "(background)";
                 event_emit(vm->event_sink, &ev);
+            }
+
+            if (vm->no_fork) {
+                vm->laststatus = 0;
+                break;
             }
 
             fflush(stdout);
@@ -2303,6 +2334,15 @@ int vm_run(vm_t *vm)
             }
             uint8_t pl_flags = read_u8(vm);
             bool negate = (pl_flags & 1) != 0;
+
+            if (vm->no_fork) {
+                vm->laststatus = 127;
+                if (negate) {
+                    vm->laststatus = (vm->laststatus == 0) ? 1 : 0;
+                }
+                free(offsets);
+                goto pipeline_done;
+            }
 
             /* Create pipes and fork children */
             pid_t *pids = xcalloc((size_t)cmd_count, sizeof(pid_t));

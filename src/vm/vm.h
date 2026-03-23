@@ -135,6 +135,7 @@ typedef struct vm {
     int eval_image_count;
     int eval_image_cap;
 
+    bool no_fork;             /* if true, fork opcodes return 127 (for fuzzing) */
     event_sink_t *event_sink; /* event output (NULL = no events) */
     int64_t next_command_id;  /* monotonic command ID counter */
 
