@@ -61,6 +61,7 @@ TEST_COMPILER_SRCS = tests/compiler/test_compiler.c
 TEST_FORMAT_SRCS = tests/format/test_format.c
 TEST_LINT_SRCS = tests/lint/test_lint.c
 TEST_LSP_SRCS = tests/lsp/test_lsp.c
+TEST_CLI_SRCS = tests/cli/test_cli.c tests/cli/test_agent.c
 
 TEST_TAP_BIN = $(BUILD)/tests/test_tap
 TEST_FOUNDATION_BINS = $(TEST_FOUNDATION_SRCS:tests/%.c=$(BUILD)/tests/%)
@@ -70,6 +71,7 @@ TEST_COMPILER_BINS = $(TEST_COMPILER_SRCS:tests/%.c=$(BUILD)/tests/%)
 TEST_FORMAT_BINS = $(TEST_FORMAT_SRCS:tests/%.c=$(BUILD)/tests/%)
 TEST_LINT_BINS = $(TEST_LINT_SRCS:tests/%.c=$(BUILD)/tests/%)
 TEST_LSP_BINS = $(TEST_LSP_SRCS:tests/%.c=$(BUILD)/tests/%)
+TEST_CLI_BINS = $(TEST_CLI_SRCS:tests/%.c=$(BUILD)/tests/%)
 
 # Fuzz targets (require LLVM clang with libfuzzer; Apple clang does not include it)
 # Usage: make fuzz-build FUZZ_CC=/opt/homebrew/opt/llvm/bin/clang
@@ -91,7 +93,7 @@ FUZZ_LDFLAGS = -fsanitize=fuzzer,address,undefined
 FUZZ_LIB_OBJS = $(LIB_OBJS:$(BUILD)/%=$(BUILD)/fuzz-objs/%)
 
 .PHONY: all clean test test-tap test-foundation test-parser test-vm test-compiler \
-        test-format test-lint test-lsp format format-check fuzz-build
+        test-format test-lint test-lsp test-cli format format-check fuzz-build
 
 all: $(BINARY)
 
@@ -128,7 +130,7 @@ $(BUILD)/tests/format/%: tests/format/%.c tests/tap.h $(LIB_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJS)
 
-test: test-tap test-foundation test-parser test-vm test-compiler test-format test-lint test-lsp
+test: test-tap test-foundation test-parser test-vm test-compiler test-format test-lint test-lsp test-cli
 
 test-tap: $(TEST_TAP_BIN)
 	$(TEST_TAP_BIN)
@@ -161,6 +163,13 @@ $(BUILD)/tests/lsp/%: tests/lsp/%.c tests/tap.h $(BINARY)
 
 test-lsp: $(TEST_LSP_BINS)
 	@for t in $(TEST_LSP_BINS); do echo "# Running $$t"; $$t || exit 1; done
+
+$(BUILD)/tests/cli/%: tests/cli/%.c tests/tap.h $(BINARY)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
+
+test-cli: $(TEST_CLI_BINS)
+	@for t in $(TEST_CLI_BINS); do echo "# Running $$t"; $$t || exit 1; done
 
 # Fuzz-instrumented library objects (compiled with fuzzer sanitizer flags)
 $(BUILD)/fuzz-objs/%.o: src/%.c
