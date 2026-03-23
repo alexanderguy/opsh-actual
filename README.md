@@ -26,7 +26,9 @@ opsh compiles `.opsh` scripts to bytecode and executes them on a stack-based vir
 - Signal handling with deferred dispatch, `trap` for INT/TERM/HUP/QUIT/USR1/USR2/PIPE/ALRM/EXIT; `kill` supports KILL and other signals
 - Module system: `lib::import` with namespaced functions
 - Functions defined in `eval` and `source` are callable by the parent
-- Session management server (`opsh serve`) with JSON-RPC 2.0 protocol (planned)
+- Background command execution with `&`
+- Session management server (`opsh serve`) with JSON-RPC 2.0 transport
+- MCP tool server (`opsh mcp`) exposing shell sessions as MCP tools
 - Bytecode serialization (`.opsb` format) and standalone binary compilation
 - Formatter (`opsh format`) and linter (`opsh lint`) with shellcheck-compatible output
 - LSP server (`opsh lsp`) with diagnostics and completion
@@ -62,6 +64,9 @@ opsh lint script.opsh
 
 # Start session management server (JSON-RPC 2.0 on stdin/stdout)
 opsh serve
+
+# Start MCP tool server
+opsh mcp
 
 # Start the LSP server
 opsh lsp
@@ -116,6 +121,7 @@ src/
   lint/         static analysis checks (opsh lint)
   agent/        JSON-RPC event sink
   lsp/          Language Server Protocol server
+  serve/        session management server, MCP tool server
   main.c        entry point
 include/opsh/   public headers (value.h)
 tests/          TAP test harness and test suites

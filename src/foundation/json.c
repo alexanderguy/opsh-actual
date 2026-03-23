@@ -1,4 +1,5 @@
 #include "foundation/json.h"
+
 #include "foundation/strbuf.h"
 
 #include <inttypes.h>
@@ -278,6 +279,11 @@ int64_t json_get_int(const char *json, const char *key)
         return -1;
     }
     return strtoll(p, NULL, 10);
+}
+
+int json_has_key(const char *json, const char *key)
+{
+    return json_find_key(json, key) != NULL;
 }
 
 char *json_find_nested_string(const char *json, const char *key)

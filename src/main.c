@@ -5,9 +5,10 @@
 #include "foundation/util.h"
 #include "lint/lint.h"
 #include "lsp/lsp.h"
-#include "serve/child.h"
-#include "serve/serve.h"
 #include "parser/parser.h"
+#include "serve/child.h"
+#include "serve/mcp.h"
+#include "serve/serve.h"
 #include "vm/image_io.h"
 #include "vm/vm.h"
 
@@ -117,6 +118,7 @@ static void usage(const char *progname)
     fprintf(stderr, "\n");
     fprintf(stderr, "options:\n");
     fprintf(stderr, "  serve             start session management server\n");
+    fprintf(stderr, "  mcp               start MCP tool server\n");
     fprintf(stderr, "  -h, --help      show this help\n");
 }
 
@@ -218,6 +220,8 @@ int main(int argc, char *argv[])
             break;
         } else if (strcmp(argv[i], "serve") == 0 && i == 1) {
             return serve_main();
+        } else if (strcmp(argv[i], "mcp") == 0 && i == 1) {
+            return mcp_main();
         } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             output_path = argv[++i];
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
