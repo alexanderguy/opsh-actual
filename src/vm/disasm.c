@@ -113,6 +113,8 @@ static const char *opcode_name(uint8_t op)
         return "CMD_SUBST";
     case OP_SUBSHELL:
         return "SUBSHELL";
+    case OP_BACKGROUND:
+        return "BACKGROUND";
     case OP_REDIR_SAVE:
         return "REDIR_SAVE";
     case OP_REDIR_RESTORE:
