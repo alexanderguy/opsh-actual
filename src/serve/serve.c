@@ -108,6 +108,8 @@ static void handle_initialize(int64_t id)
     strbuf_append_byte(&result, ',');
     json_write_string(&result, "session/eval");
     strbuf_append_byte(&result, ',');
+    json_write_string(&result, "session/signal");
+    strbuf_append_byte(&result, ',');
     json_write_string(&result, "session/destroy");
     strbuf_append_byte(&result, ',');
     json_write_string(&result, "session/list");
@@ -273,6 +275,32 @@ static void handle_session_list(int64_t id)
     strbuf_append_str(&result, "]}");
     jsonrpc_send_result(stdout, id, result.contents);
     strbuf_destroy(&result);
+}
+
+static void handle_session_signal(int64_t id, const char *msg)
+{
+    int64_t sid = get_session_id_param(msg);
+    session_t *s = find_session((int)sid);
+    if (s == NULL) {
+        jsonrpc_send_error(stdout, id, JSONRPC_INTERNAL_ERROR,
+                           "Session not found");
+        return;
+    }
+
+    int64_t signum = get_nested_int(msg, "signal");
+    if (signum <= 0 || signum > 31) {
+        jsonrpc_send_error(stdout, id, JSONRPC_INVALID_REQUEST,
+                           "Invalid or missing signal number");
+        return;
+    }
+
+    if (kill(s->pid, (int)signum) != 0) {
+        jsonrpc_send_error(stdout, id, JSONRPC_INTERNAL_ERROR,
+                           "Failed to send signal");
+        return;
+    }
+
+    jsonrpc_send_result(stdout, id, "null");
 }
 
 /* Write exactly n bytes, retrying on EINTR and short writes. */
@@ -506,6 +534,8 @@ int serve_handle_message(const char *msg)
         handle_session_create(id, msg);
     } else if (strcmp(method, "session/eval") == 0) {
         handle_session_eval(id, msg);
+    } else if (strcmp(method, "session/signal") == 0) {
+        handle_session_signal(id, msg);
     } else if (strcmp(method, "session/destroy") == 0) {
         handle_session_destroy(id, msg);
     } else if (strcmp(method, "session/list") == 0) {
