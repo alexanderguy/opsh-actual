@@ -63,8 +63,7 @@ static void serve_stop(serve_proc_t *s)
 static void serve_send(serve_proc_t *s, const char *json)
 {
     char header[64];
-    int hlen = snprintf(header, sizeof(header),
-                        "Content-Length: %zu\r\n\r\n", strlen(json));
+    int hlen = snprintf(header, sizeof(header), "Content-Length: %zu\r\n\r\n", strlen(json));
     write(s->to_fd, header, (size_t)hlen);
     write(s->to_fd, json, strlen(json));
 }
@@ -103,8 +102,7 @@ static char *serve_recv(serve_proc_t *s)
     char *body = malloc((size_t)content_length + 1);
     size_t total = 0;
     while ((int)total < content_length) {
-        ssize_t n = read(s->from_fd, body + total,
-                         (size_t)content_length - total);
+        ssize_t n = read(s->from_fd, body + total, (size_t)content_length - total);
         if (n <= 0) {
             free(body);
             return NULL;
@@ -133,10 +131,8 @@ static void test_initialize(void)
     serve_send(&s, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}");
     char *resp = serve_recv(&s);
     tap_ok(resp != NULL, "initialize: got response");
-    tap_ok(resp != NULL && strstr(resp, "\"version\"") != NULL,
-           "initialize: has version");
-    tap_ok(resp != NULL && strstr(resp, "\"methods\"") != NULL,
-           "initialize: has methods list");
+    tap_ok(resp != NULL && strstr(resp, "\"version\"") != NULL, "initialize: has version");
+    tap_ok(resp != NULL && strstr(resp, "\"methods\"") != NULL, "initialize: has methods list");
     tap_ok(resp != NULL && strstr(resp, "session/create") != NULL,
            "initialize: lists session/create");
     free(resp);
@@ -144,8 +140,7 @@ static void test_initialize(void)
     serve_send(&s, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\"}");
     resp = serve_recv(&s);
     tap_ok(resp != NULL, "shutdown: got response");
-    tap_ok(resp != NULL && strstr(resp, "\"result\":null") != NULL,
-           "shutdown: result is null");
+    tap_ok(resp != NULL && strstr(resp, "\"result\":null") != NULL, "shutdown: result is null");
     free(resp);
 
     serve_stop(&s);
@@ -158,10 +153,8 @@ static void test_unknown_method(void)
     serve_send(&s, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"bogus\"}");
     char *resp = serve_recv(&s);
     tap_ok(resp != NULL, "unknown: got response");
-    tap_ok(resp != NULL && strstr(resp, "\"error\"") != NULL,
-           "unknown: has error");
-    tap_ok(resp != NULL && strstr(resp, "-32601") != NULL,
-           "unknown: method not found code");
+    tap_ok(resp != NULL && strstr(resp, "\"error\"") != NULL, "unknown: has error");
+    tap_ok(resp != NULL && strstr(resp, "-32601") != NULL, "unknown: method not found code");
     free(resp);
 
     serve_shutdown(&s);
@@ -174,10 +167,8 @@ static void test_missing_method(void)
     serve_send(&s, "{\"jsonrpc\":\"2.0\",\"id\":1}");
     char *resp = serve_recv(&s);
     tap_ok(resp != NULL, "no method: got response");
-    tap_ok(resp != NULL && strstr(resp, "\"error\"") != NULL,
-           "no method: has error");
-    tap_ok(resp != NULL && strstr(resp, "-32600") != NULL,
-           "no method: invalid request code");
+    tap_ok(resp != NULL && strstr(resp, "\"error\"") != NULL, "no method: has error");
+    tap_ok(resp != NULL && strstr(resp, "-32600") != NULL, "no method: invalid request code");
     free(resp);
 
     serve_shutdown(&s);
@@ -206,33 +197,28 @@ static void test_session_create_destroy(void)
     serve_send(&s, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session/create\"}");
     char *resp = serve_recv(&s);
     tap_ok(resp != NULL, "create: got response");
-    tap_ok(resp != NULL && strstr(resp, "\"session_id\"") != NULL,
-           "create: has session_id");
+    tap_ok(resp != NULL && strstr(resp, "\"session_id\"") != NULL, "create: has session_id");
     free(resp);
 
     /* List sessions — should have 1 */
     serve_send(&s, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/list\"}");
     resp = serve_recv(&s);
     tap_ok(resp != NULL, "list: got response");
-    tap_ok(resp != NULL && strstr(resp, "\"session_id\":1") != NULL,
-           "list: session 1 present");
+    tap_ok(resp != NULL && strstr(resp, "\"session_id\":1") != NULL, "list: session 1 present");
     free(resp);
 
     /* Destroy the session */
-    serve_send(&s,
-               "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session/destroy\","
-               "\"params\":{\"session_id\":1}}");
+    serve_send(&s, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session/destroy\","
+                   "\"params\":{\"session_id\":1}}");
     resp = serve_recv(&s);
     tap_ok(resp != NULL, "destroy: got response");
-    tap_ok(resp != NULL && strstr(resp, "\"result\":null") != NULL,
-           "destroy: result is null");
+    tap_ok(resp != NULL && strstr(resp, "\"result\":null") != NULL, "destroy: result is null");
     free(resp);
 
     /* List sessions — should be empty */
     serve_send(&s, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"session/list\"}");
     resp = serve_recv(&s);
-    tap_ok(resp != NULL && strstr(resp, "\"sessions\":[]") != NULL,
-           "list after destroy: empty");
+    tap_ok(resp != NULL && strstr(resp, "\"sessions\":[]") != NULL, "list after destroy: empty");
     free(resp);
 
     serve_shutdown(&s);
@@ -245,21 +231,18 @@ static void test_multiple_sessions(void)
     /* Create two sessions */
     serve_send(&s, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session/create\"}");
     char *resp = serve_recv(&s);
-    tap_ok(resp != NULL && strstr(resp, "\"session_id\"") != NULL,
-           "multi: first session created");
+    tap_ok(resp != NULL && strstr(resp, "\"session_id\"") != NULL, "multi: first session created");
     free(resp);
 
     serve_send(&s, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/create\"}");
     resp = serve_recv(&s);
-    tap_ok(resp != NULL && strstr(resp, "\"session_id\"") != NULL,
-           "multi: second session created");
+    tap_ok(resp != NULL && strstr(resp, "\"session_id\"") != NULL, "multi: second session created");
     free(resp);
 
     /* List should have 2 */
     serve_send(&s, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session/list\"}");
     resp = serve_recv(&s);
-    tap_ok(resp != NULL && strstr(resp, "\"session_id\":") != NULL,
-           "multi: list has sessions");
+    tap_ok(resp != NULL && strstr(resp, "\"session_id\":") != NULL, "multi: list has sessions");
     /* Count occurrences of session_id */
     int count = 0;
     if (resp != NULL) {
@@ -280,12 +263,10 @@ static void test_destroy_nonexistent(void)
 {
     serve_proc_t s = serve_start();
 
-    serve_send(&s,
-               "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session/destroy\","
-               "\"params\":{\"session_id\":999}}");
+    serve_send(&s, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session/destroy\","
+                   "\"params\":{\"session_id\":999}}");
     char *resp = serve_recv(&s);
-    tap_ok(resp != NULL && strstr(resp, "\"error\"") != NULL,
-           "destroy nonexistent: error");
+    tap_ok(resp != NULL && strstr(resp, "\"error\"") != NULL, "destroy nonexistent: error");
     free(resp);
 
     serve_shutdown(&s);
@@ -297,8 +278,7 @@ static void test_empty_list(void)
 
     serve_send(&s, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session/list\"}");
     char *resp = serve_recv(&s);
-    tap_ok(resp != NULL && strstr(resp, "\"sessions\":[]") != NULL,
-           "empty list: no sessions");
+    tap_ok(resp != NULL && strstr(resp, "\"sessions\":[]") != NULL, "empty list: no sessions");
     free(resp);
 
     serve_shutdown(&s);
@@ -308,8 +288,8 @@ static void test_empty_list(void)
 static int serve_create_session(serve_proc_t *s, int rpc_id)
 {
     char buf[128];
-    snprintf(buf, sizeof(buf),
-             "{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"session/create\"}", rpc_id);
+    snprintf(buf, sizeof(buf), "{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"session/create\"}",
+             rpc_id);
     serve_send(s, buf);
     char *resp = serve_recv(s);
     int sid = -1;
@@ -342,10 +322,8 @@ static void test_eval_basic(void)
 
     char *resp = serve_eval(&s, 2, sid, "echo hello");
     tap_ok(resp != NULL, "eval basic: got response");
-    tap_ok(resp != NULL && strstr(resp, "\"exit_status\":0") != NULL,
-           "eval basic: exit status 0");
-    tap_ok(resp != NULL && strstr(resp, "hello\\n") != NULL,
-           "eval basic: stdout has hello");
+    tap_ok(resp != NULL && strstr(resp, "\"exit_status\":0") != NULL, "eval basic: exit status 0");
+    tap_ok(resp != NULL && strstr(resp, "hello\\n") != NULL, "eval basic: stdout has hello");
     free(resp);
 
     serve_shutdown(&s);
@@ -375,8 +353,7 @@ static void test_eval_state_persistence(void)
 
     /* Read it back in second eval */
     resp = serve_eval(&s, 3, sid, "echo $x");
-    tap_ok(resp != NULL && strstr(resp, "persist_test") != NULL,
-           "eval persist: variable survives");
+    tap_ok(resp != NULL && strstr(resp, "persist_test") != NULL, "eval persist: variable survives");
     free(resp);
 
     serve_shutdown(&s);
@@ -388,13 +365,11 @@ static void test_eval_multiple_commands(void)
     int sid = serve_create_session(&s, 1);
 
     char *resp = serve_eval(&s, 2, sid, "echo first");
-    tap_ok(resp != NULL && strstr(resp, "first") != NULL,
-           "eval multi: first output");
+    tap_ok(resp != NULL && strstr(resp, "first") != NULL, "eval multi: first output");
     free(resp);
 
     resp = serve_eval(&s, 3, sid, "echo second");
-    tap_ok(resp != NULL && strstr(resp, "second") != NULL,
-           "eval multi: second output");
+    tap_ok(resp != NULL && strstr(resp, "second") != NULL, "eval multi: second output");
     free(resp);
 
     serve_shutdown(&s);
@@ -405,8 +380,7 @@ static void test_eval_nonexistent_session(void)
     serve_proc_t s = serve_start();
 
     char *resp = serve_eval(&s, 1, 999, "echo hello");
-    tap_ok(resp != NULL && strstr(resp, "\"error\"") != NULL,
-           "eval nonexistent: error");
+    tap_ok(resp != NULL && strstr(resp, "\"error\"") != NULL, "eval nonexistent: error");
     free(resp);
 
     serve_shutdown(&s);
@@ -420,11 +394,42 @@ static void test_eval_missing_source(void)
     char buf[256];
     snprintf(buf, sizeof(buf),
              "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/eval\","
-             "\"params\":{\"session_id\":%d}}", sid);
+             "\"params\":{\"session_id\":%d}}",
+             sid);
     serve_send(&s, buf);
     char *resp = serve_recv(&s);
-    tap_ok(resp != NULL && strstr(resp, "\"error\"") != NULL,
-           "eval no source: error");
+    tap_ok(resp != NULL && strstr(resp, "\"error\"") != NULL, "eval no source: error");
+    free(resp);
+
+    serve_shutdown(&s);
+}
+
+static void test_signal_nonexistent(void)
+{
+    serve_proc_t s = serve_start();
+
+    serve_send(&s, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session/signal\","
+                   "\"params\":{\"session_id\":999,\"signal\":15}}");
+    char *resp = serve_recv(&s);
+    tap_ok(resp != NULL && strstr(resp, "\"error\"") != NULL, "signal nonexistent: error");
+    free(resp);
+
+    serve_shutdown(&s);
+}
+
+static void test_signal_invalid(void)
+{
+    serve_proc_t s = serve_start();
+    int sid = serve_create_session(&s, 1);
+
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/signal\","
+             "\"params\":{\"session_id\":%d}}",
+             sid);
+    serve_send(&s, buf);
+    char *resp = serve_recv(&s);
+    tap_ok(resp != NULL && strstr(resp, "\"error\"") != NULL, "signal missing: error");
     free(resp);
 
     serve_shutdown(&s);
@@ -432,7 +437,7 @@ static void test_eval_missing_source(void)
 
 int main(void)
 {
-    tap_plan(36);
+    tap_plan(38);
 
     test_initialize();
     test_unknown_method();
@@ -448,6 +453,8 @@ int main(void)
     test_eval_multiple_commands();
     test_eval_nonexistent_session();
     test_eval_missing_source();
+    test_signal_nonexistent();
+    test_signal_invalid();
 
     tap_done();
     return 0;
