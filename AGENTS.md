@@ -6,8 +6,6 @@ opsh is a non-interactive shell for ops automation with a bytecode VM. It parses
 a POSIX shell subset (plus extensions like `[[ ]]`, `local`, arrays), compiles
 to bytecode, and executes in a custom VM. Zero external dependencies beyond libc.
 
-Release binary is ~135KB stripped.
-
 ## Code Conventions
 
 - C99, compiled with `clang -Wall -Wextra -Werror -pedantic`
@@ -45,7 +43,8 @@ make fuzz-build FUZZ_CC=/opt/homebrew/opt/llvm/bin/clang  # fuzz targets
 
 ## Subcommands
 
-- `opsh <script>` — run a script
+- `opsh <script> [args...]` — run a script
+- `opsh -c 'string' [args...]` — run an inline command
 - `opsh build <script> [-o out]` — compile to bytecode or standalone binary
 - `opsh format [-w] [-d] [-i N] [file...]` — format scripts
 - `opsh lint [-f gcc|tty|json1|quiet] [-S level] [file...]` — lint scripts
@@ -80,9 +79,8 @@ modules are compiled into the bytecode image — no external files needed.
 
 ## Fuzz Targets
 
-Four fuzz harnesses in `fuzz/`: parser, compiler, image deserializer, formatter,
-linter. Built with LLVM clang (not Apple clang, which lacks libfuzzer). Seed
-corpora in `fuzz/corpus/`.
+Fuzz harnesses in `fuzz/`. Built with LLVM clang (not Apple clang, which lacks
+libfuzzer). Seed corpora in `fuzz/corpus/`.
 
 ## Next: Plugin Architecture
 

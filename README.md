@@ -23,7 +23,7 @@ opsh compiles `.opsh` scripts to bytecode and executes them on a stack-based vir
 - Shell options: `set -e` (errexit), `set -u` (nounset), `set -x` (xtrace)
 - 27 builtins: `echo`, `exit`, `true`, `false`, `:`, `cd`, `pwd`, `export`, `unset`, `readonly`, `local`, `shift`, `test`/`[`, `printf`, `read`, `return`, `type`, `trap`, `eval`, `.`/`source`, `command`, `exec`, `wait`, `kill`, `umask`, `set`, `getopts`
 - Script arguments (`$1`-`$N`, `$#`, `$@`, `$*`, `$$`, `$!`, `$-`, `$0`) and `opsh -c 'string'`
-- Signal handling with deferred dispatch, `trap` for INT/TERM/HUP/QUIT/KILL/USR1/USR2/PIPE/ALRM/EXIT
+- Signal handling with deferred dispatch, `trap` for INT/TERM/HUP/QUIT/USR1/USR2/PIPE/ALRM/EXIT; `kill` supports KILL and other signals
 - Module system: `lib::import` with namespaced functions
 - Functions defined in `eval` and `source` are callable by the parent
 - JSON-RPC 2.0 agent event stream (`--agent-stdio`)
@@ -34,6 +34,7 @@ opsh compiles `.opsh` scripts to bytecode and executes them on a stack-based vir
 
 **Known limitations:**
 
+- Background commands (`&`) are parsed but not executed asynchronously
 - Capability system and native module API not yet implemented
 
 ## Usage
