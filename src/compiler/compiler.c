@@ -851,8 +851,10 @@ static void compile_if(compiler_t *cc, command_t *cmd)
             size_t skip_body = emit_jump(cc, OP_JMP_FALSE);
             /* Compile body */
             compile_program(cc, ic->body);
-            /* Jump to end of if chain */
-            if (ic->next != NULL) {
+            /* Jump to end of if chain.
+             * Also needed for the last if/elif when there's no else,
+             * to skip past the STATUS_ZERO emitted below. */
+            {
                 size_t *end_patch = xmalloc(sizeof(size_t));
                 *end_patch = emit_jump(cc, OP_JMP);
                 plist_add(&end_patches, end_patch);
@@ -865,7 +867,22 @@ static void compile_if(compiler_t *cc, command_t *cmd)
         }
     }
 
-    /* Patch all end-of-chain jumps */
+    /* POSIX 2.9.4: if no branch taken, exit status is 0.
+     * If there's no else, emit STATUS_ZERO on the fall-through path
+     * and have taken branches jump past it. */
+    {
+        bool has_else = false;
+        for (ic = cmd->u.if_clause.clauses; ic != NULL; ic = ic->next) {
+            if (ic->condition == NULL) {
+                has_else = true;
+            }
+        }
+        if (!has_else) {
+            image_emit_u8(cc->image, OP_STATUS_ZERO);
+        }
+    }
+
+    /* Patch all end-of-chain jumps to after STATUS_ZERO */
     for (i = 0; i < end_patches.length; i++) {
         size_t *patch_pos = plist_get(&end_patches, i);
         patch_jump(cc, *patch_pos);
@@ -963,36 +980,65 @@ static void compile_for(compiler_t *cc, command_t *cmd)
  */
 static void compile_while_until(compiler_t *cc, command_t *cmd, bool is_until)
 {
-    /* Loop top: evaluate condition */
-    size_t loop_top = cc->image->code_size;
+    /* POSIX 2.9.4: exit status is 0 if body never executed.
+     *
+     * We track "entered" via a flag:
+     *   first_exit: jumped to on first condition fail (never entered)
+     *   later_exit: jumped to on subsequent condition fails (entered)
+     *
+     * first_exit sets STATUS_ZERO then falls through. later_exit skips it. */
 
+    /* First time: condition check, if fails → first_exit */
     image_emit_u8(cc->image, OP_ERREXIT_PUSH);
     compile_program(cc, cmd->u.while_clause.condition);
     image_emit_u8(cc->image, OP_ERREXIT_POP);
-
-    /* Jump past body if condition fails (while) or succeeds (until) */
-    size_t exit_jump;
+    size_t first_exit;
     if (is_until) {
-        exit_jump = emit_jump(cc, OP_JMP_TRUE);
+        first_exit = emit_jump(cc, OP_JMP_TRUE);
     } else {
-        exit_jump = emit_jump(cc, OP_JMP_FALSE);
+        first_exit = emit_jump(cc, OP_JMP_FALSE);
     }
 
-    /* Register loop for break/continue (while/until has no iterator) */
-    push_loop(cc, loop_top, false);
+    /* Loop top (for subsequent iterations): condition check */
+    size_t body_start = cc->image->code_size;
+
+    push_loop(cc, 0 /* patched below */, false);
 
     /* Compile body */
     compile_program(cc, cmd->u.while_clause.body);
 
-    /* Jump back to condition */
-    size_t back_jump = emit_jump(cc, OP_JMP);
-    patch_jump_to(cc, back_jump, loop_top);
+    /* Re-check condition */
+    size_t continue_target = cc->image->code_size;
+    image_emit_u8(cc->image, OP_ERREXIT_PUSH);
+    compile_program(cc, cmd->u.while_clause.condition);
+    image_emit_u8(cc->image, OP_ERREXIT_POP);
 
-    /* Backpatch breaks to after the loop */
+    /* If condition still true (while) or false (until), jump back to body */
+    if (is_until) {
+        size_t loop_back = emit_jump(cc, OP_JMP_FALSE);
+        patch_jump_to(cc, loop_back, body_start);
+    } else {
+        size_t loop_back = emit_jump(cc, OP_JMP_TRUE);
+        patch_jump_to(cc, loop_back, body_start);
+    }
+    /* Condition failed — fall through (status = condition's status) */
+
+    /* Fix continue target */
+    cc->loop_stack[cc->loop_depth - 1].continue_target = continue_target;
+
+    /* Backpatch breaks */
     pop_loop(cc);
 
-    /* Patch exit jump */
-    patch_jump(cc, exit_jump);
+    /* later_exit lands here: condition failed after at least one iteration.
+     * Skip the STATUS_ZERO. */
+    size_t skip_zero = emit_jump(cc, OP_JMP);
+
+    /* first_exit: never entered body. POSIX: status = 0. */
+    patch_jump(cc, first_exit);
+    image_emit_u8(cc->image, OP_STATUS_ZERO);
+
+    /* Both paths merge here */
+    patch_jump(cc, skip_zero);
 }
 
 /*
@@ -1060,13 +1106,22 @@ static void compile_case(compiler_t *cc, command_t *cmd)
         }
     }
 
-    /* Patch all end jumps */
+    /* POSIX 2.9.4: exit status is 0 if no patterns matched.
+     * No-match path falls through to STATUS_ZERO then jumps to end.
+     * Matched bodies jump directly to end, skipping STATUS_ZERO. */
+    image_emit_u8(cc->image, OP_STATUS_ZERO);
+    size_t skip_status = emit_jump(cc, OP_JMP);
+
+    /* Patch all matched-body end jumps to here (after STATUS_ZERO + JMP) */
     for (i = 0; i < end_patches.length; i++) {
         size_t *ep = plist_get(&end_patches, i);
         patch_jump(cc, *ep);
         free(ep);
     }
     plist_destroy(&end_patches);
+
+    /* Patch the no-match path's JMP to here too */
+    patch_jump(cc, skip_status);
 }
 
 /*

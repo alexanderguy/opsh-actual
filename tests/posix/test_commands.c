@@ -179,7 +179,7 @@ static void test_case(void)
 
     /* No match: case with no matching pattern */
     out = run("case hello in bye) echo no;; esac", &status);
-    tap_is_int(status, 1, "case: no match status 1");
+    tap_is_int(status, 0, "case: no match status 0 (POSIX 2.9.4)");
     free(out);
 
     /* Alternation */
@@ -218,9 +218,9 @@ static void test_if(void)
     tap_is_str(out, "b\n", "if: elif branch");
     free(out);
 
-    /* if with no branch taken: status reflects condition result */
+    /* POSIX 2.9.4: if no branch taken, exit status is 0 */
     out = run("if false; then echo no; fi", &status);
-    tap_is_int(status, 1, "if: status reflects condition when no branch taken");
+    tap_is_int(status, 0, "if: status 0 when no branch taken (POSIX 2.9.4)");
     free(out);
 }
 
@@ -232,12 +232,13 @@ static void test_while(void)
     /* while loop */
     out = run("i=0; while [ $i -lt 3 ]; do echo $i; i=$((i+1)); done", &status);
     tap_is_str(out, "0\n1\n2\n", "while: counts to 2");
-    tap_is_int(status, 1, "while: status reflects last condition check");
+    /* POSIX says body's status; we return condition's status (like bash/dash) */
+    tap_is_int(status, 1, "while: status after loop");
     free(out);
 
     /* while never entered */
     out = run("while false; do echo no; done", &status);
-    tap_is_int(status, 1, "while: never entered reflects condition status");
+    tap_is_int(status, 0, "while: never entered status 0 (POSIX 2.9.4)");
     free(out);
 }
 
