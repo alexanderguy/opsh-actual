@@ -26,7 +26,7 @@ AGENT_SRCS = src/agent/event.c
 FORMAT_SRCS = src/format/format.c
 LINT_SRCS = src/lint/lint.c src/lint/checks.c
 LSP_SRCS = src/lsp/lsp.c
-SERVE_SRCS = src/serve/child.c src/serve/serve.c
+SERVE_SRCS = src/serve/child.c src/serve/serve.c src/serve/mcp.c
 MAIN_SRCS = src/main.c
 
 ALL_SRCS = $(FOUNDATION_SRCS) $(PARSER_SRCS) $(VM_SRCS) $(EXEC_SRCS) \
@@ -64,7 +64,7 @@ TEST_FORMAT_SRCS = tests/format/test_format.c
 TEST_LINT_SRCS = tests/lint/test_lint.c
 TEST_LSP_SRCS = tests/lsp/test_lsp.c
 TEST_CLI_SRCS = tests/cli/test_cli.c
-TEST_SERVE_SRCS = tests/serve/test_child.c tests/serve/test_serve.c
+TEST_SERVE_SRCS = tests/serve/test_child.c tests/serve/test_serve.c tests/serve/test_mcp.c
 
 TEST_TAP_BIN = $(BUILD)/tests/test_tap
 TEST_FOUNDATION_BINS = $(TEST_FOUNDATION_SRCS:tests/%.c=$(BUILD)/tests/%)
@@ -91,7 +91,8 @@ FUZZ_FOUNDATION_BIN = $(BUILD)/fuzz/fuzz_foundation
 FUZZ_VM_BIN = $(BUILD)/fuzz/fuzz_vm
 FUZZ_JSON_BIN = $(BUILD)/fuzz/fuzz_json
 FUZZ_SERVE_BIN = $(BUILD)/fuzz/fuzz_serve
-FUZZ_BINS = $(FUZZ_PARSER_BIN) $(FUZZ_COMPILE_BIN) $(FUZZ_IMAGE_BIN) $(FUZZ_FORMAT_BIN) $(FUZZ_LINT_BIN) $(FUZZ_ARITH_BIN) $(FUZZ_LSP_BIN) $(FUZZ_FOUNDATION_BIN) $(FUZZ_VM_BIN) $(FUZZ_JSON_BIN) $(FUZZ_SERVE_BIN)
+FUZZ_MCP_BIN = $(BUILD)/fuzz/fuzz_mcp
+FUZZ_BINS = $(FUZZ_PARSER_BIN) $(FUZZ_COMPILE_BIN) $(FUZZ_IMAGE_BIN) $(FUZZ_FORMAT_BIN) $(FUZZ_LINT_BIN) $(FUZZ_ARITH_BIN) $(FUZZ_LSP_BIN) $(FUZZ_FOUNDATION_BIN) $(FUZZ_VM_BIN) $(FUZZ_JSON_BIN) $(FUZZ_SERVE_BIN) $(FUZZ_MCP_BIN)
 
 FUZZ_CFLAGS = -std=c99 -Wall -Wextra -Werror -pedantic -Iinclude -Isrc \
               -fsanitize=fuzzer,address,undefined -g -O1
@@ -233,6 +234,10 @@ $(FUZZ_JSON_BIN): fuzz/fuzz_json.c $(FUZZ_LIB_OBJS)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS)
 
 $(FUZZ_SERVE_BIN): fuzz/fuzz_serve.c $(FUZZ_LIB_OBJS)
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS)
+
+$(FUZZ_MCP_BIN): fuzz/fuzz_mcp.c $(FUZZ_LIB_OBJS)
 	@mkdir -p $(dir $@)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS)
 

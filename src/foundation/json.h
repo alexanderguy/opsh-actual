@@ -25,4 +25,7 @@ char *json_get_string(const char *json, const char *key);
 int64_t json_get_int(const char *json, const char *key);
 char *json_find_nested_string(const char *json, const char *key);
 
+/* Check if a top-level key exists in a JSON object. Returns 1 if found. */
+int json_has_key(const char *json, const char *key);
+
 #endif /* OPSH_FOUNDATION_JSON_H */
