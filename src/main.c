@@ -18,10 +18,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#ifdef __APPLE__
-#include <mach-o/dyld.h>
-#endif
-
 /*
  * Appended payload trailer (8 bytes at end of executable):
  *   4 bytes: payload offset from start of file (u32 LE)
@@ -29,31 +25,6 @@
  */
 #define TRAILER_MAGIC "OPSB"
 #define TRAILER_SIZE 8
-
-/* Get the path to the current executable */
-static char *get_self_exe(void)
-{
-#ifdef __APPLE__
-    uint32_t size = 0;
-    _NSGetExecutablePath(NULL, &size);
-    char *buf = xmalloc(size);
-    if (_NSGetExecutablePath(buf, &size) != 0) {
-        free(buf);
-        return NULL;
-    }
-    return buf;
-#else
-    /* Linux: /proc/self/exe */
-    char *buf = xmalloc(4096);
-    ssize_t len = readlink("/proc/self/exe", buf, 4095);
-    if (len < 0) {
-        free(buf);
-        return NULL;
-    }
-    buf[len] = '\0';
-    return buf;
-#endif
-}
 
 /* Check if this executable has an appended .opsb payload.
  * Returns the loaded image, or NULL if no payload is present. */
