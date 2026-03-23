@@ -6,6 +6,7 @@
  * operators, and recursive evaluation.
  */
 #include "exec/variable.h"
+#include "foundation/rcstr.h"
 #include "vm/arith.h"
 
 #include <stddef.h>
@@ -24,9 +25,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     environ_t *env = environ_new(NULL, false);
 
     /* Seed a few variables so variable resolution paths are exercised */
-    environ_set(env, "x", value_string(strdup("42")));
-    environ_set(env, "y", value_string(strdup("7")));
-    environ_set(env, "empty", value_string(strdup("")));
+    environ_set(env, "x", value_string(rcstr_new("42")));
+    environ_set(env, "y", value_string(rcstr_new("7")));
+    environ_set(env, "empty", value_string(rcstr_new("")));
 
     arith_error_t err = ARITH_OK;
     (void)arith_eval(input, env, &err);
