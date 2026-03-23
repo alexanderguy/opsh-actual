@@ -249,6 +249,7 @@ int vm_exec_string(vm_t *vm, const char *source, const char *label)
     if (ast == NULL || parser_error_count(&p) > 0) {
         sh_list_free(ast);
         parser_destroy(&p);
+        vm->laststatus = 2;
         return 1;
     }
 
@@ -257,17 +258,42 @@ int vm_exec_string(vm_t *vm, const char *source, const char *label)
     parser_destroy(&p);
 
     if (img == NULL) {
+        vm->laststatus = 2;
         return 1;
     }
 
     vm_t sub;
     vm_init(&sub, img);
-    /* Share environment with caller but keep separate func tables.
-     * The sub-VM uses the sub-image's own func table (indices match
-     * the compiled OP_EXEC_FUNC instructions). Parent functions are
-     * accessible via runtime name lookup (OP_EXEC_SIMPLE). */
+    /* Share environment with caller. */
     environ_destroy(sub.env);
     sub.env = vm->env;
+
+    /* Copy parent functions into the sub-VM so runtime name lookup
+     * (OP_EXEC_SIMPLE) can find functions defined by earlier calls.
+     * Skip any that collide with the sub-image's own compiled functions
+     * (those are dispatched via OP_EXEC_FUNC by index and take priority). */
+    {
+        int pi;
+        for (pi = 0; pi < vm->func_count; pi++) {
+            /* Check if sub already has a function with this name */
+            int conflict = 0;
+            int si;
+            for (si = 0; si < sub.func_count; si++) {
+                if (strcmp(sub.func_table[si].name, vm->func_table[pi].name) == 0) {
+                    conflict = 1;
+                    break;
+                }
+            }
+            if (!conflict) {
+                sub.func_table = xrealloc(sub.func_table,
+                                          ((size_t)sub.func_count + 1) * sizeof(vm_func_t));
+                sub.func_table[sub.func_count].name = vm->func_table[pi].name;
+                sub.func_table[sub.func_count].bytecode_offset = vm->func_table[pi].bytecode_offset;
+                sub.func_table[sub.func_count].image = vm->func_table[pi].image;
+                sub.func_count++;
+            }
+        }
+    }
 
     int status = vm_run(&sub);
 
@@ -275,8 +301,16 @@ int vm_exec_string(vm_t *vm, const char *source, const char *label)
      * Tag them with the sub-image pointer for image-swap dispatch. */
     {
         int fi;
-        bool has_new_funcs = (sub.func_count > 0);
+        bool has_new_funcs = false;
         for (fi = 0; fi < sub.func_count; fi++) {
+            /* Functions inherited from the parent have a non-NULL image
+             * pointer.  Only functions compiled in this image (image==NULL)
+             * are genuinely new and need to be merged back. */
+            if (sub.func_table[fi].image != NULL)
+                continue;
+
+            has_new_funcs = true;
+
             /* Check if this function already exists in the parent table */
             int existing = -1;
             int pi;
@@ -289,9 +323,7 @@ int vm_exec_string(vm_t *vm, const char *source, const char *label)
             vm_func_t entry;
             entry.name = sub.func_table[fi].name;
             entry.bytecode_offset = sub.func_table[fi].bytecode_offset;
-            /* Preserve image pointer from nested evals; only set to
-             * this image for functions that were compiled here (NULL) */
-            entry.image = sub.func_table[fi].image ? sub.func_table[fi].image : img;
+            entry.image = img;
 
             if (existing >= 0) {
                 /* Overwrite existing function (redefinition) */

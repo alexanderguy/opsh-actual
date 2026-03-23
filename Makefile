@@ -26,10 +26,11 @@ AGENT_SRCS = src/agent/event.c
 FORMAT_SRCS = src/format/format.c
 LINT_SRCS = src/lint/lint.c src/lint/checks.c
 LSP_SRCS = src/lsp/lsp.c
+SERVE_SRCS = src/serve/child.c
 MAIN_SRCS = src/main.c
 
 ALL_SRCS = $(FOUNDATION_SRCS) $(PARSER_SRCS) $(VM_SRCS) $(EXEC_SRCS) \
-           $(BUILTIN_SRCS) $(COMPILER_SRCS) $(AGENT_SRCS) $(FORMAT_SRCS) $(LINT_SRCS) $(LSP_SRCS) $(MAIN_SRCS)
+           $(BUILTIN_SRCS) $(COMPILER_SRCS) $(AGENT_SRCS) $(FORMAT_SRCS) $(LINT_SRCS) $(LSP_SRCS) $(SERVE_SRCS) $(MAIN_SRCS)
 ALL_OBJS = $(ALL_SRCS:src/%.c=$(BUILD)/%.o)
 DEPS = $(ALL_OBJS:.o=.d)
 
@@ -44,10 +45,11 @@ AGENT_OBJS = $(AGENT_SRCS:src/%.c=$(BUILD)/%.o)
 FORMAT_OBJS = $(FORMAT_SRCS:src/%.c=$(BUILD)/%.o)
 LINT_OBJS = $(LINT_SRCS:src/%.c=$(BUILD)/%.o)
 LSP_OBJS = $(LSP_SRCS:src/%.c=$(BUILD)/%.o)
+SERVE_OBJS = $(SERVE_SRCS:src/%.c=$(BUILD)/%.o)
 
 # All non-main objects (for test linking)
 LIB_OBJS = $(FOUNDATION_OBJS) $(PARSER_OBJS) $(VM_OBJS) $(EXEC_OBJS) \
-           $(BUILTIN_OBJS) $(COMPILER_OBJS) $(AGENT_OBJS) $(FORMAT_OBJS) $(LINT_OBJS) $(LSP_OBJS)
+           $(BUILTIN_OBJS) $(COMPILER_OBJS) $(AGENT_OBJS) $(FORMAT_OBJS) $(LINT_OBJS) $(LSP_OBJS) $(SERVE_OBJS)
 
 # Test sources
 TEST_TAP_SRC = tests/test_tap.c
@@ -62,6 +64,7 @@ TEST_FORMAT_SRCS = tests/format/test_format.c
 TEST_LINT_SRCS = tests/lint/test_lint.c
 TEST_LSP_SRCS = tests/lsp/test_lsp.c
 TEST_CLI_SRCS = tests/cli/test_cli.c
+TEST_SERVE_SRCS = tests/serve/test_child.c
 
 TEST_TAP_BIN = $(BUILD)/tests/test_tap
 TEST_FOUNDATION_BINS = $(TEST_FOUNDATION_SRCS:tests/%.c=$(BUILD)/tests/%)
@@ -72,6 +75,7 @@ TEST_FORMAT_BINS = $(TEST_FORMAT_SRCS:tests/%.c=$(BUILD)/tests/%)
 TEST_LINT_BINS = $(TEST_LINT_SRCS:tests/%.c=$(BUILD)/tests/%)
 TEST_LSP_BINS = $(TEST_LSP_SRCS:tests/%.c=$(BUILD)/tests/%)
 TEST_CLI_BINS = $(TEST_CLI_SRCS:tests/%.c=$(BUILD)/tests/%)
+TEST_SERVE_BINS = $(TEST_SERVE_SRCS:tests/%.c=$(BUILD)/tests/%)
 
 # Fuzz targets (require LLVM clang with libfuzzer; Apple clang does not include it)
 # Usage: make fuzz-build FUZZ_CC=/opt/homebrew/opt/llvm/bin/clang
@@ -95,7 +99,7 @@ FUZZ_LDFLAGS = -fsanitize=fuzzer,address,undefined
 FUZZ_LIB_OBJS = $(LIB_OBJS:$(BUILD)/%=$(BUILD)/fuzz-objs/%)
 
 .PHONY: all clean test test-tap test-foundation test-parser test-vm test-compiler \
-        test-format test-lint test-lsp test-cli format format-check fuzz-build
+        test-format test-lint test-lsp test-cli test-serve format format-check fuzz-build
 
 all: $(BINARY)
 
@@ -132,7 +136,7 @@ $(BUILD)/tests/format/%: tests/format/%.c tests/tap.h $(LIB_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJS)
 
-test: test-tap test-foundation test-parser test-vm test-compiler test-format test-lint test-lsp test-cli
+test: test-tap test-foundation test-parser test-vm test-compiler test-format test-lint test-lsp test-cli test-serve
 
 test-tap: $(TEST_TAP_BIN)
 	$(TEST_TAP_BIN)
@@ -172,6 +176,13 @@ $(BUILD)/tests/cli/%: tests/cli/%.c tests/tap.h $(BINARY)
 
 test-cli: $(TEST_CLI_BINS)
 	@for t in $(TEST_CLI_BINS); do echo "# Running $$t"; $$t || exit 1; done
+
+$(BUILD)/tests/serve/%: tests/serve/%.c tests/tap.h $(BINARY)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
+
+test-serve: $(TEST_SERVE_BINS)
+	@for t in $(TEST_SERVE_BINS); do echo "# Running $$t"; $$t || exit 1; done
 
 # Fuzz-instrumented library objects (compiled with fuzzer sanitizer flags)
 $(BUILD)/fuzz-objs/%.o: src/%.c

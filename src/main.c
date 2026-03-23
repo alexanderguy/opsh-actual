@@ -5,6 +5,7 @@
 #include "foundation/util.h"
 #include "lint/lint.h"
 #include "lsp/lsp.h"
+#include "serve/child.h"
 #include "parser/parser.h"
 #include "vm/image_io.h"
 #include "vm/vm.h"
@@ -195,6 +196,11 @@ static int run_image(bytecode_image_t *img, const char *filename, int script_arg
 
 int main(int argc, char *argv[])
 {
+    /* Child command-loop mode (internal, used by opsh serve) */
+    if (argc >= 2 && strcmp(argv[1], "--child-loop") == 0) {
+        return child_loop_main();
+    }
+
     /* Check for appended bytecode payload (standalone binary mode) */
     {
         bytecode_image_t *img = load_appended_image();
