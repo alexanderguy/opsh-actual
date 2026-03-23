@@ -34,7 +34,6 @@ opsh compiles `.opsh` scripts to bytecode and executes them on a stack-based vir
 
 **Known limitations:**
 
-- Background commands (`&`) are parsed but not executed asynchronously
 - Capability system and native module API not yet implemented
 
 ## Usage
