@@ -9,6 +9,9 @@ void *xrealloc(void *ptr, size_t size);
 void *xcalloc(size_t count, size_t size);
 char *xstrdup(const char *s);
 
+/* Get the path to the current executable. Returns malloc'd string or NULL. */
+char *get_self_exe(void);
+
 /* Read entire file into a malloc'd string. Returns NULL on failure. */
 char *read_file(const char *path);
 

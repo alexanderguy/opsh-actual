@@ -3,9 +3,15 @@
 #include "foundation/strbuf.h"
 
 #include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 void *xmalloc(size_t size)
 {
@@ -93,4 +99,27 @@ char *read_stdin(void)
         strbuf_append_bytes(&buf, tmp, n);
     }
     return strbuf_detach(&buf);
+}
+
+char *get_self_exe(void)
+{
+#ifdef __APPLE__
+    uint32_t size = 0;
+    _NSGetExecutablePath(NULL, &size);
+    char *buf = xmalloc(size);
+    if (_NSGetExecutablePath(buf, &size) != 0) {
+        free(buf);
+        return NULL;
+    }
+    return buf;
+#else
+    char *buf = xmalloc(4096);
+    ssize_t len = readlink("/proc/self/exe", buf, 4095);
+    if (len < 0) {
+        free(buf);
+        return NULL;
+    }
+    buf[len] = '\0';
+    return buf;
+#endif
 }
