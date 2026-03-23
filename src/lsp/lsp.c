@@ -452,61 +452,60 @@ static void handle_completion(int64_t id)
     strbuf_destroy(&items);
 }
 
+int lsp_handle_message(const char *msg)
+{
+    char *method = json_get_string(msg, "method");
+    int64_t id = json_get_int(msg, "id");
+
+    if (method == NULL) {
+        return 1; /* continue */
+    }
+
+    if (strcmp(method, "initialize") == 0) {
+        strbuf_t caps;
+        strbuf_init(&caps);
+        strbuf_append_str(&caps, "{\"capabilities\":{");
+        strbuf_append_str(&caps, "\"textDocumentSync\":1");
+        strbuf_append_str(&caps, ",\"completionProvider\":{}");
+        strbuf_append_str(&caps, "}}");
+        send_result(id, caps.contents);
+        strbuf_destroy(&caps);
+    } else if (strcmp(method, "initialized") == 0) {
+        /* No-op notification */
+    } else if (strcmp(method, "shutdown") == 0) {
+        send_result(id, "null");
+    } else if (strcmp(method, "exit") == 0) {
+        free(method);
+        return 0; /* stop */
+    } else if (strcmp(method, "textDocument/didOpen") == 0 ||
+               strcmp(method, "textDocument/didChange") == 0) {
+        char *uri = json_find_nested_string(msg, "uri");
+        char *text = json_find_nested_string(msg, "text");
+        if (uri != NULL && text != NULL) {
+            publish_diagnostics(uri, text);
+        }
+        free(uri);
+        free(text);
+    } else if (strcmp(method, "textDocument/completion") == 0) {
+        handle_completion(id);
+    }
+
+    free(method);
+    return 1; /* continue */
+}
+
 int lsp_main(void)
 {
-    bool running = true;
-    bool initialized = false;
-
-    while (running) {
+    for (;;) {
         char *msg = read_message();
         if (msg == NULL) {
             break;
         }
-
-        char *method = json_get_string(msg, "method");
-        int64_t id = json_get_int(msg, "id");
-
-        if (method == NULL) {
-            free(msg);
-            continue;
-        }
-
-        if (strcmp(method, "initialize") == 0) {
-            strbuf_t caps;
-            strbuf_init(&caps);
-            strbuf_append_str(&caps, "{\"capabilities\":{");
-            strbuf_append_str(&caps, "\"textDocumentSync\":1");
-            strbuf_append_str(&caps, ",\"completionProvider\":{}");
-            strbuf_append_str(&caps, "}}");
-            send_result(id, caps.contents);
-            strbuf_destroy(&caps);
-            initialized = true;
-        } else if (strcmp(method, "initialized") == 0) {
-            /* No-op notification */
-            (void)initialized;
-        } else if (strcmp(method, "shutdown") == 0) {
-            send_result(id, "null");
-        } else if (strcmp(method, "exit") == 0) {
-            running = false;
-        } else if (strcmp(method, "textDocument/didOpen") == 0 ||
-                   strcmp(method, "textDocument/didChange") == 0) {
-            /* Extract URI and text from the message.
-             * These are nested inside params.textDocument, so we
-             * search the raw message for the first "uri" and "text" keys. */
-            char *uri = json_find_nested_string(msg, "uri");
-            char *text = json_find_nested_string(msg, "text");
-            if (uri != NULL && text != NULL) {
-                publish_diagnostics(uri, text);
-            }
-            free(uri);
-            free(text);
-        } else if (strcmp(method, "textDocument/completion") == 0) {
-            handle_completion(id);
-        }
-
-        free(method);
+        int cont = lsp_handle_message(msg);
         free(msg);
+        if (!cont) {
+            break;
+        }
     }
-
     return 0;
 }
