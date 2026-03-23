@@ -80,7 +80,8 @@ FUZZ_IMAGE_BIN = $(BUILD)/fuzz/fuzz_image
 FUZZ_FORMAT_BIN = $(BUILD)/fuzz/fuzz_format
 FUZZ_LINT_BIN = $(BUILD)/fuzz/fuzz_lint
 FUZZ_ARITH_BIN = $(BUILD)/fuzz/fuzz_arith
-FUZZ_BINS = $(FUZZ_PARSER_BIN) $(FUZZ_COMPILE_BIN) $(FUZZ_IMAGE_BIN) $(FUZZ_FORMAT_BIN) $(FUZZ_LINT_BIN) $(FUZZ_ARITH_BIN)
+FUZZ_LSP_BIN = $(BUILD)/fuzz/fuzz_lsp
+FUZZ_BINS = $(FUZZ_PARSER_BIN) $(FUZZ_COMPILE_BIN) $(FUZZ_IMAGE_BIN) $(FUZZ_FORMAT_BIN) $(FUZZ_LINT_BIN) $(FUZZ_ARITH_BIN) $(FUZZ_LSP_BIN)
 
 FUZZ_CFLAGS = -std=c99 -Wall -Wextra -Werror -pedantic -Iinclude -Isrc \
               -fsanitize=fuzzer,address,undefined -g -O1
@@ -188,6 +189,10 @@ $(FUZZ_LINT_BIN): fuzz/fuzz_lint.c $(FUZZ_LIB_OBJS)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS)
 
 $(FUZZ_ARITH_BIN): fuzz/fuzz_arith.c $(FUZZ_LIB_OBJS)
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS)
+
+$(FUZZ_LSP_BIN): fuzz/fuzz_lsp.c $(FUZZ_LIB_OBJS)
 	@mkdir -p $(dir $@)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS)
 
