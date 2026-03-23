@@ -5,11 +5,17 @@
 #include "foundation/strbuf.h"
 #include "foundation/util.h"
 
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 /* JSON-RPC 2.0 error codes */
@@ -18,7 +24,10 @@
 #define JSONRPC_METHOD_NOT_FOUND (-32601)
 #define JSONRPC_INTERNAL_ERROR   (-32603)
 
-#define MAX_SESSIONS 16
+#define MAX_SESSIONS       16
+#define DEFAULT_TIMEOUT_MS 30000
+#define MAX_TIMEOUT_MS     300000
+#define MAX_OUTPUT_SIZE    (16 * 1024 * 1024) /* 16MB */
 
 typedef struct {
     int active;
@@ -96,6 +105,8 @@ static void handle_initialize(int64_t id)
     json_write_string(&result, "shutdown");
     strbuf_append_byte(&result, ',');
     json_write_string(&result, "session/create");
+    strbuf_append_byte(&result, ',');
+    json_write_string(&result, "session/eval");
     strbuf_append_byte(&result, ',');
     json_write_string(&result, "session/destroy");
     strbuf_append_byte(&result, ',');
@@ -203,6 +214,11 @@ static void handle_session_create(int64_t id, const char *msg)
     s->err_fd = err_child[0];
     s->control_fd = control[0];
 
+    /* Set read fds non-blocking for drain-after-control */
+    fcntl(s->out_fd, F_SETFL, fcntl(s->out_fd, F_GETFL) | O_NONBLOCK);
+    fcntl(s->err_fd, F_SETFL, fcntl(s->err_fd, F_GETFL) | O_NONBLOCK);
+    fcntl(s->control_fd, F_SETFL, fcntl(s->control_fd, F_GETFL) | O_NONBLOCK);
+
     strbuf_t result;
     strbuf_init(&result);
     json_begin_object(&result);
@@ -212,27 +228,11 @@ static void handle_session_create(int64_t id, const char *msg)
     strbuf_destroy(&result);
 }
 
+static int64_t get_nested_int(const char *msg, const char *key);
+
 static int64_t get_session_id_param(const char *msg)
 {
-    /* Try top-level first, then search nested (inside params) */
-    int64_t sid = json_get_int(msg, "session_id");
-    if (sid >= 0) {
-        return sid;
-    }
-    /* Brute-force search for "session_id":N anywhere in the message */
-    const char *needle = "\"session_id\"";
-    const char *p = strstr(msg, needle);
-    if (p == NULL) {
-        return -1;
-    }
-    p += strlen(needle);
-    while (*p == ' ' || *p == ':') {
-        p++;
-    }
-    if (*p >= '0' && *p <= '9') {
-        return strtoll(p, NULL, 10);
-    }
-    return -1;
+    return get_nested_int(msg, "session_id");
 }
 
 static void handle_session_destroy(int64_t id, const char *msg)
@@ -275,6 +275,205 @@ static void handle_session_list(int64_t id)
     strbuf_destroy(&result);
 }
 
+/* Write exactly n bytes, retrying on EINTR and short writes. */
+static int write_exact(int fd, const void *buf, size_t n)
+{
+    size_t total = 0;
+    while (total < n) {
+        ssize_t w = write(fd, (const char *)buf + total, n - total);
+        if (w > 0) {
+            total += (size_t)w;
+        } else if (w < 0 && errno == EINTR) {
+            continue;
+        } else {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* Write a length-prefixed command to the child's stdin */
+static int session_write_cmd(session_t *s, const char *source, size_t len)
+{
+    uint8_t hdr[4];
+    hdr[0] = len & 0xFF;
+    hdr[1] = (len >> 8) & 0xFF;
+    hdr[2] = (len >> 16) & 0xFF;
+    hdr[3] = (len >> 24) & 0xFF;
+
+    if (write_exact(s->cmd_fd, hdr, 4) != 0) {
+        return -1;
+    }
+    if (write_exact(s->cmd_fd, source, len) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+/* Drain a non-blocking fd into a strbuf. Stops at EAGAIN/EWOULDBLOCK or cap. */
+static void drain_fd(int fd, strbuf_t *buf)
+{
+    char tmp[4096];
+    for (;;) {
+        if (buf->length >= MAX_OUTPUT_SIZE) {
+            break;
+        }
+        ssize_t n = read(fd, tmp, sizeof(tmp));
+        if (n > 0) {
+            size_t avail = MAX_OUTPUT_SIZE - buf->length;
+            size_t take = (size_t)n < avail ? (size_t)n : avail;
+            strbuf_append_bytes(buf, tmp, take);
+        } else {
+            break; /* EAGAIN, EOF, or error */
+        }
+    }
+}
+
+/* Search for an integer value by key anywhere in the JSON string. */
+static int64_t get_nested_int(const char *msg, const char *key)
+{
+    char search[128];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *p = strstr(msg, search);
+    if (p == NULL) {
+        return -1;
+    }
+    p += strlen(search);
+    while (*p == ' ' || *p == '\t' || *p == ':') {
+        p++;
+    }
+    if ((*p >= '0' && *p <= '9') || *p == '-') {
+        return strtoll(p, NULL, 10);
+    }
+    return -1;
+}
+
+static void handle_session_eval(int64_t id, const char *msg)
+{
+    int64_t sid = get_session_id_param(msg);
+    session_t *s = find_session((int)sid);
+    if (s == NULL) {
+        jsonrpc_send_error(stdout, id, JSONRPC_INTERNAL_ERROR,
+                           "Session not found");
+        return;
+    }
+
+    char *source = json_find_nested_string(msg, "source");
+    if (source == NULL) {
+        jsonrpc_send_error(stdout, id, JSONRPC_INVALID_REQUEST,
+                           "Missing source parameter");
+        return;
+    }
+
+    /* Parse optional timeout */
+    int64_t timeout = get_nested_int(msg, "timeout_ms");
+    if (timeout <= 0) {
+        timeout = DEFAULT_TIMEOUT_MS;
+    }
+    if (timeout > MAX_TIMEOUT_MS) {
+        timeout = MAX_TIMEOUT_MS;
+    }
+
+    /* Send the command */
+    if (session_write_cmd(s, source, strlen(source)) != 0) {
+        free(source);
+        jsonrpc_send_error(stdout, id, JSONRPC_INTERNAL_ERROR,
+                           "Failed to send command to session");
+        return;
+    }
+    free(source);
+
+    /* Poll for output and completion.
+     * Note: this blocks the serve loop. A future phase should integrate
+     * eval polling into the main message loop for concurrent sessions. */
+    strbuf_t out_buf, err_buf;
+    strbuf_init(&out_buf);
+    strbuf_init(&err_buf);
+
+    int exit_status = -1;
+    bool child_dead = false;
+
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
+    for (;;) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        int64_t elapsed = (now.tv_sec - start.tv_sec) * 1000 +
+                          (now.tv_nsec - start.tv_nsec) / 1000000;
+        int remaining = (int)(timeout - elapsed);
+        if (remaining <= 0) {
+            break;
+        }
+
+        struct pollfd pfds[3];
+        pfds[0].fd = s->out_fd;
+        pfds[0].events = POLLIN;
+        pfds[1].fd = s->err_fd;
+        pfds[1].events = POLLIN;
+        pfds[2].fd = s->control_fd;
+        pfds[2].events = POLLIN;
+
+        int ready = poll(pfds, 3, remaining < 100 ? remaining : 100);
+        if (ready < 0 && errno == EINTR) {
+            continue;
+        }
+
+        if (pfds[0].revents & POLLIN) {
+            drain_fd(s->out_fd, &out_buf);
+        }
+        if (pfds[1].revents & POLLIN) {
+            drain_fd(s->err_fd, &err_buf);
+        }
+        if (pfds[2].revents & (POLLIN | POLLHUP)) {
+            uint8_t status_byte;
+            ssize_t n = read(s->control_fd, &status_byte, 1);
+            if (n == 1) {
+                exit_status = (int)status_byte;
+            } else {
+                child_dead = true;
+            }
+            /* Drain any remaining stdout/stderr */
+            drain_fd(s->out_fd, &out_buf);
+            drain_fd(s->err_fd, &err_buf);
+            break;
+        }
+    }
+
+    if (child_dead) {
+        strbuf_destroy(&out_buf);
+        strbuf_destroy(&err_buf);
+        jsonrpc_send_error(stdout, id, JSONRPC_INTERNAL_ERROR,
+                           "Session process died");
+        return;
+    }
+
+    if (exit_status < 0) {
+        strbuf_destroy(&out_buf);
+        strbuf_destroy(&err_buf);
+        jsonrpc_send_error(stdout, id, JSONRPC_INTERNAL_ERROR,
+                           "Command timed out");
+        return;
+    }
+
+    /* Build response */
+    strbuf_t result;
+    strbuf_init(&result);
+    json_begin_object(&result);
+    json_key_int(&result, "exit_status", exit_status);
+    json_key_string(&result, "stdout", out_buf.contents);
+    json_key_string(&result, "stderr", err_buf.contents);
+    if (out_buf.length >= MAX_OUTPUT_SIZE || err_buf.length >= MAX_OUTPUT_SIZE) {
+        json_key_bool(&result, "truncated", 1);
+    }
+    json_end_object(&result);
+    jsonrpc_send_result(stdout, id, result.contents);
+    strbuf_destroy(&result);
+
+    strbuf_destroy(&out_buf);
+    strbuf_destroy(&err_buf);
+}
+
 int serve_handle_message(const char *msg)
 {
     char *method = json_get_string(msg, "method");
@@ -305,6 +504,8 @@ int serve_handle_message(const char *msg)
         return 0;
     } else if (strcmp(method, "session/create") == 0) {
         handle_session_create(id, msg);
+    } else if (strcmp(method, "session/eval") == 0) {
+        handle_session_eval(id, msg);
     } else if (strcmp(method, "session/destroy") == 0) {
         handle_session_destroy(id, msg);
     } else if (strcmp(method, "session/list") == 0) {

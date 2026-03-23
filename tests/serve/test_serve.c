@@ -304,9 +304,135 @@ static void test_empty_list(void)
     serve_shutdown(&s);
 }
 
+/* Helper: create a session, return its id */
+static int serve_create_session(serve_proc_t *s, int rpc_id)
+{
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+             "{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"session/create\"}", rpc_id);
+    serve_send(s, buf);
+    char *resp = serve_recv(s);
+    int sid = -1;
+    if (resp != NULL) {
+        const char *p = strstr(resp, "\"session_id\":");
+        if (p != NULL) {
+            sid = atoi(p + 13);
+        }
+    }
+    free(resp);
+    return sid;
+}
+
+/* Helper: eval a command in a session */
+static char *serve_eval(serve_proc_t *s, int rpc_id, int sid, const char *source)
+{
+    char buf[1024];
+    snprintf(buf, sizeof(buf),
+             "{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"session/eval\","
+             "\"params\":{\"session_id\":%d,\"source\":\"%s\"}}",
+             rpc_id, sid, source);
+    serve_send(s, buf);
+    return serve_recv(s);
+}
+
+static void test_eval_basic(void)
+{
+    serve_proc_t s = serve_start();
+    int sid = serve_create_session(&s, 1);
+
+    char *resp = serve_eval(&s, 2, sid, "echo hello");
+    tap_ok(resp != NULL, "eval basic: got response");
+    tap_ok(resp != NULL && strstr(resp, "\"exit_status\":0") != NULL,
+           "eval basic: exit status 0");
+    tap_ok(resp != NULL && strstr(resp, "hello\\n") != NULL,
+           "eval basic: stdout has hello");
+    free(resp);
+
+    serve_shutdown(&s);
+}
+
+static void test_eval_exit_status(void)
+{
+    serve_proc_t s = serve_start();
+    int sid = serve_create_session(&s, 1);
+
+    char *resp = serve_eval(&s, 2, sid, "false");
+    tap_ok(resp != NULL && strstr(resp, "\"exit_status\":1") != NULL,
+           "eval status: false returns 1");
+    free(resp);
+
+    serve_shutdown(&s);
+}
+
+static void test_eval_state_persistence(void)
+{
+    serve_proc_t s = serve_start();
+    int sid = serve_create_session(&s, 1);
+
+    /* Set variable in first eval */
+    char *resp = serve_eval(&s, 2, sid, "x=persist_test");
+    free(resp);
+
+    /* Read it back in second eval */
+    resp = serve_eval(&s, 3, sid, "echo $x");
+    tap_ok(resp != NULL && strstr(resp, "persist_test") != NULL,
+           "eval persist: variable survives");
+    free(resp);
+
+    serve_shutdown(&s);
+}
+
+static void test_eval_multiple_commands(void)
+{
+    serve_proc_t s = serve_start();
+    int sid = serve_create_session(&s, 1);
+
+    char *resp = serve_eval(&s, 2, sid, "echo first");
+    tap_ok(resp != NULL && strstr(resp, "first") != NULL,
+           "eval multi: first output");
+    free(resp);
+
+    resp = serve_eval(&s, 3, sid, "echo second");
+    tap_ok(resp != NULL && strstr(resp, "second") != NULL,
+           "eval multi: second output");
+    free(resp);
+
+    serve_shutdown(&s);
+}
+
+static void test_eval_nonexistent_session(void)
+{
+    serve_proc_t s = serve_start();
+
+    char *resp = serve_eval(&s, 1, 999, "echo hello");
+    tap_ok(resp != NULL && strstr(resp, "\"error\"") != NULL,
+           "eval nonexistent: error");
+    free(resp);
+
+    serve_shutdown(&s);
+}
+
+static void test_eval_missing_source(void)
+{
+    serve_proc_t s = serve_start();
+    int sid = serve_create_session(&s, 1);
+
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/eval\","
+             "\"params\":{\"session_id\":%d}}", sid);
+    serve_send(&s, buf);
+    char *resp = serve_recv(&s);
+    tap_ok(resp != NULL && strstr(resp, "\"error\"") != NULL,
+           "eval no source: error");
+    free(resp);
+
+    serve_shutdown(&s);
+}
+
 int main(void)
 {
-    tap_plan(27);
+    tap_plan(36);
 
     test_initialize();
     test_unknown_method();
@@ -316,6 +442,12 @@ int main(void)
     test_multiple_sessions();
     test_destroy_nonexistent();
     test_empty_list();
+    test_eval_basic();
+    test_eval_exit_status();
+    test_eval_state_persistence();
+    test_eval_multiple_commands();
+    test_eval_nonexistent_session();
+    test_eval_missing_source();
 
     tap_done();
     return 0;
