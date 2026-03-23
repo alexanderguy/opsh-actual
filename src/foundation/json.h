@@ -20,4 +20,9 @@ void json_key_null(strbuf_t *buf, const char *key);
 void json_begin_array(strbuf_t *buf);
 void json_end_array(strbuf_t *buf);
 
+/* JSON read helpers -- extract values by key from a JSON object string */
+char *json_get_string(const char *json, const char *key);
+int64_t json_get_int(const char *json, const char *key);
+char *json_find_nested_string(const char *json, const char *key);
+
 #endif /* OPSH_FOUNDATION_JSON_H */

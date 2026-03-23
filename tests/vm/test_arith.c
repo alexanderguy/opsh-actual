@@ -1,5 +1,6 @@
 #include "../tap.h"
 #include "exec/variable.h"
+#include "foundation/rcstr.h"
 #include "vm/arith.h"
 
 #include <stdlib.h>
@@ -48,8 +49,8 @@ static void test_precedence(void)
 static void test_variables(void)
 {
     environ_t *env = environ_new(NULL, false);
-    environ_set(env, "x", value_string(strdup("5")));
-    environ_set(env, "y", value_string(strdup("3")));
+    environ_set(env, "x", value_string(rcstr_new("5")));
+    environ_set(env, "y", value_string(rcstr_new("3")));
 
     tap_is_int((int)eval("x+1)", env), 6, "x+1 = 6");
     tap_is_int((int)eval("x*y)", env), 15, "x*y = 15");
@@ -113,7 +114,7 @@ static void test_logical(void)
 static void test_short_circuit(void)
 {
     environ_t *env = environ_new(NULL, false);
-    environ_set(env, "x", value_string(strdup("5")));
+    environ_set(env, "x", value_string(rcstr_new("5")));
 
     eval("0 && (x=99))", env);
     tap_is_int((int)eval("x)", env), 5, "&& short-circuit: x unchanged");
@@ -150,7 +151,7 @@ static void test_bitwise(void)
 static void test_increment(void)
 {
     environ_t *env = environ_new(NULL, false);
-    environ_set(env, "x", value_string(strdup("5")));
+    environ_set(env, "x", value_string(rcstr_new("5")));
 
     tap_is_int((int)eval("++x)", env), 6, "++x returns 6");
     tap_is_int((int)eval("x)", env), 6, "x is now 6");
@@ -188,7 +189,7 @@ static void test_errors(void)
     tap_is_int(eval_err("@)", env), ARITH_ERR_SYNTAX, "syntax error");
 
     /* Recursive depth */
-    environ_set(env, "a", value_string(strdup("a")));
+    environ_set(env, "a", value_string(rcstr_new("a")));
     tap_is_int(eval_err("a)", env), ARITH_ERR_DEPTH, "recursion depth");
 
     environ_destroy(env);

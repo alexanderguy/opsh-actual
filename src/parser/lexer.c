@@ -219,6 +219,7 @@ static word_part_t *parse_param_expansion(lexer_t *lex)
                 char *raw = strbuf_detach(&idx_str);
                 lexer_t sub;
                 lexer_init(&sub, raw, lex->filename);
+                sub.arena = lex->arena;
                 pe->index = parse_word_units(&sub, true, true, NULL);
                 /* Clear quoted since this is not actually quoted */
                 word_part_t *wu;
@@ -1229,8 +1230,7 @@ const char *token_type_name(token_type_t type)
     return "unknown";
 }
 
-word_part_t *lexer_parse_heredoc_body(const char *body, const char *filename,
-                                     arena_t *arena)
+word_part_t *lexer_parse_heredoc_body(const char *body, const char *filename, arena_t *arena)
 {
     lexer_t lex;
     lexer_init(&lex, body, filename);

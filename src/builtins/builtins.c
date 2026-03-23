@@ -757,7 +757,7 @@ static int builtin_eval(vm_t *vm, int argc, value_t *argv)
         }
         char *s = value_to_string(&argv[i]);
         strbuf_append_str(&cmd, s);
-        free(s);
+        rcstr_release(s);
     }
 
     char *str = strbuf_detach(&cmd);
@@ -777,13 +777,13 @@ static int builtin_dot(vm_t *vm, int argc, value_t *argv)
     char *source = read_file(filename);
     if (source == NULL) {
         fprintf(stderr, "opsh: .: %s: not found\n", filename);
-        free(filename);
+        rcstr_release(filename);
         return 1;
     }
 
     int status = vm_exec_string(vm, source, filename);
     free(source);
-    free(filename);
+    rcstr_release(filename);
     return status;
 }
 
@@ -797,7 +797,7 @@ static int builtin_command(vm_t *vm, int argc, value_t *argv)
 
     /* command -v name: print how name would be resolved */
     if (strcmp(arg1, "-v") == 0) {
-        free(arg1);
+        rcstr_release(arg1);
         if (argc < 3) {
             return 1;
         }
@@ -810,7 +810,7 @@ static int builtin_command(vm_t *vm, int argc, value_t *argv)
             strbuf_append_byte(&out, '\n');
             write_fd1(out.contents, out.length);
             strbuf_destroy(&out);
-            free(name);
+            rcstr_release(name);
             return 0;
         }
         /* Check functions */
@@ -823,7 +823,7 @@ static int builtin_command(vm_t *vm, int argc, value_t *argv)
                 strbuf_append_byte(&out, '\n');
                 write_fd1(out.contents, out.length);
                 strbuf_destroy(&out);
-                free(name);
+                rcstr_release(name);
                 return 0;
             }
         }
@@ -845,7 +845,7 @@ static int builtin_command(vm_t *vm, int argc, value_t *argv)
                             strbuf_append_byte(&out, '\n');
                             write_fd1(out.contents, out.length);
                             strbuf_destroy(&out);
-                            free(name);
+                            rcstr_release(name);
                             return 0;
                         }
                     }
@@ -853,11 +853,11 @@ static int builtin_command(vm_t *vm, int argc, value_t *argv)
                 }
             }
         }
-        free(name);
+        rcstr_release(name);
         return 1;
     }
 
-    free(arg1);
+    rcstr_release(arg1);
 
     /* command name args...: run bypassing function lookup */
     char *cmd_name = value_to_string(&argv[1]);
@@ -866,7 +866,7 @@ static int builtin_command(vm_t *vm, int argc, value_t *argv)
     int bi = builtin_lookup(cmd_name);
     if (bi >= 0) {
         const char *bname = builtin_table[bi].name;
-        free(cmd_name);
+        rcstr_release(cmd_name);
         int status = builtin_table[bi].fn(vm, argc - 1, argv + 1);
         vm->laststatus = status;
         if (strcmp(bname, "exit") == 0) {
@@ -895,7 +895,7 @@ static int builtin_command(vm_t *vm, int argc, value_t *argv)
                 rcstr_release(exec_argv[i]);
             }
             free(exec_argv);
-            free(cmd_name);
+            rcstr_release(cmd_name);
             return 126;
         }
         if (pid == 0) {
@@ -927,7 +927,7 @@ static int builtin_command(vm_t *vm, int argc, value_t *argv)
             rcstr_release(exec_argv[i]);
         }
         free(exec_argv);
-        free(cmd_name);
+        rcstr_release(cmd_name);
         return status;
     }
 }
@@ -991,11 +991,11 @@ static int builtin_wait(vm_t *vm, int argc, value_t *argv)
     long pval = strtol(pid_str, &endp, 10);
     if (*endp != '\0') {
         fprintf(stderr, "opsh: wait: %s: invalid pid\n", pid_str);
-        free(pid_str);
+        rcstr_release(pid_str);
         return 2;
     }
     pid_t pid = (pid_t)pval;
-    free(pid_str);
+    rcstr_release(pid_str);
 
     int wstatus;
     pid_t wp;
@@ -1026,7 +1026,7 @@ static int builtin_kill(vm_t *vm, int argc, value_t *argv)
 
     /* kill -l: list signals */
     if (strcmp(arg1, "-l") == 0) {
-        free(arg1);
+        rcstr_release(arg1);
         write_fd1("HUP INT QUIT TERM KILL USR1 USR2\n", 33);
         return 0;
     }
@@ -1040,13 +1040,13 @@ static int builtin_kill(vm_t *vm, int argc, value_t *argv)
         int sn = signame_to_num(arg1 + 1);
         if (sn < 0) {
             fprintf(stderr, "opsh: kill: %s: invalid signal\n", arg1 + 1);
-            free(arg1);
+            rcstr_release(arg1);
             return 2;
         }
         signo = sn;
         pid_start = 2;
     }
-    free(arg1);
+    rcstr_release(arg1);
 
     if (pid_start >= argc) {
         fprintf(stderr, "opsh: kill: no pid specified\n");
@@ -1061,12 +1061,12 @@ static int builtin_kill(vm_t *vm, int argc, value_t *argv)
         long pval = strtol(ps, &endp, 10);
         if (*endp != '\0') {
             fprintf(stderr, "opsh: kill: %s: invalid pid\n", ps);
-            free(ps);
+            rcstr_release(ps);
             result = 1;
             continue;
         }
         pid_t pid = (pid_t)pval;
-        free(ps);
+        rcstr_release(ps);
         if (kill(pid, signo) != 0) {
             fprintf(stderr, "opsh: kill: %d: %s\n", (int)pid, strerror(errno));
             result = 1;
@@ -1092,11 +1092,11 @@ static int builtin_umask(vm_t *vm, int argc, value_t *argv)
     unsigned long val = strtoul(arg, &endp, 8);
     if (*endp != '\0' || val > 0777) {
         fprintf(stderr, "opsh: umask: %s: invalid mask\n", arg);
-        free(arg);
+        rcstr_release(arg);
         return 1;
     }
     umask((mode_t)val);
-    free(arg);
+    rcstr_release(arg);
     return 0;
 }
 
@@ -1127,7 +1127,7 @@ static int builtin_set(vm_t *vm, int argc, value_t *argv)
 
         /* set -- args: replace positional parameters */
         if (strcmp(arg, "--") == 0) {
-            free(arg);
+            rcstr_release(arg);
             /* Clear existing positional params */
             variable_t *hash_var = environ_get(vm->env, "#");
             int old_count = 0;
@@ -1152,15 +1152,14 @@ static int builtin_set(vm_t *vm, int argc, value_t *argv)
                 }
                 vm_set_args(vm, new_count, new_args);
                 for (ai = 0; ai < new_count; ai++) {
-                    free(new_args[ai]);
+                    rcstr_release(new_args[ai]);
                 }
                 free(new_args);
             } else {
-                char *zero = xstrdup("0");
-                environ_set(vm->env, "#", value_string(zero));
+                environ_set(vm->env, "#", value_string(rcstr_new("0")));
             }
             /* Reset OPTIND */
-            environ_assign(vm->env, "OPTIND", value_string(xstrdup("1")));
+            environ_assign(vm->env, "OPTIND", value_string(rcstr_new("1")));
             update_option_flags(vm);
             return 0;
         }
@@ -1182,16 +1181,16 @@ static int builtin_set(vm_t *vm, int argc, value_t *argv)
                     break;
                 default:
                     fprintf(stderr, "opsh: set: %c%c: invalid option\n", arg[0], *p);
-                    free(arg);
+                    rcstr_release(arg);
                     return 2;
                 }
                 p++;
             }
-            free(arg);
+            rcstr_release(arg);
             continue;
         }
 
-        free(arg);
+        rcstr_release(arg);
     }
 
     update_option_flags(vm);
@@ -1237,9 +1236,9 @@ static int builtin_getopts(vm_t *vm, int argc, value_t *argv)
 
     if (optind < 1 || optind > src_argc) {
         /* No more options */
-        environ_assign(vm->env, varname, value_string(xstrdup("?")));
-        free(optstring);
-        free(varname);
+        environ_assign(vm->env, varname, value_string(rcstr_new("?")));
+        rcstr_release(optstring);
+        rcstr_release(varname);
         return 1;
     }
 
@@ -1251,7 +1250,7 @@ static int builtin_getopts(vm_t *vm, int argc, value_t *argv)
         char pname[16];
         snprintf(pname, sizeof(pname), "%d", optind);
         variable_t *pv = environ_get(vm->env, pname);
-        cur_arg = pv ? value_to_string(&pv->value) : xstrdup("");
+        cur_arg = pv ? value_to_string(&pv->value) : rcstr_new("");
     }
 
     /* Track position within bundled options (e.g., -abc) */
@@ -1267,22 +1266,22 @@ static int builtin_getopts(vm_t *vm, int argc, value_t *argv)
     }
 
     if (cur_arg[0] != '-' || cur_arg[1] == '\0' || strcmp(cur_arg, "--") == 0) {
-        environ_assign(vm->env, varname, value_string(xstrdup("?")));
-        environ_assign(vm->env, "_OPTPOS", value_string(xstrdup("1")));
-        free(cur_arg);
-        free(optstring);
-        free(varname);
+        environ_assign(vm->env, varname, value_string(rcstr_new("?")));
+        environ_assign(vm->env, "_OPTPOS", value_string(rcstr_new("1")));
+        rcstr_release(cur_arg);
+        rcstr_release(optstring);
+        rcstr_release(varname);
         return 1;
     }
 
     char opt_ch = cur_arg[optpos];
     if (opt_ch == '\0') {
         /* Past end of this arg, move to next */
-        environ_assign(vm->env, "_OPTPOS", value_string(xstrdup("1")));
-        environ_assign(vm->env, varname, value_string(xstrdup("?")));
-        free(cur_arg);
-        free(optstring);
-        free(varname);
+        environ_assign(vm->env, "_OPTPOS", value_string(rcstr_new("1")));
+        environ_assign(vm->env, varname, value_string(rcstr_new("?")));
+        rcstr_release(cur_arg);
+        rcstr_release(optstring);
+        rcstr_release(varname);
         return 1;
     }
     const char *found = strchr(opts, opt_ch);
@@ -1293,17 +1292,17 @@ static int builtin_getopts(vm_t *vm, int argc, value_t *argv)
             fprintf(stderr, "opsh: illegal option -- %c\n", opt_ch);
         }
         char optstr[2] = {opt_ch, '\0'};
-        environ_assign(vm->env, varname, value_string(xstrdup("?")));
+        environ_assign(vm->env, varname, value_string(rcstr_new("?")));
         if (silent) {
-            environ_assign(vm->env, "OPTARG", value_string(xstrdup(optstr)));
+            environ_assign(vm->env, "OPTARG", value_string(rcstr_new(optstr)));
         }
     } else if (found[1] == ':') {
         /* Option requires argument */
         if (cur_arg[optpos + 1] != '\0') {
             /* Argument attached: -fvalue or bundled -bfvalue */
             char optstr[2] = {opt_ch, '\0'};
-            environ_assign(vm->env, varname, value_string(xstrdup(optstr)));
-            environ_assign(vm->env, "OPTARG", value_string(xstrdup(cur_arg + optpos + 1)));
+            environ_assign(vm->env, varname, value_string(rcstr_new(optstr)));
+            environ_assign(vm->env, "OPTARG", value_string(rcstr_new(cur_arg + optpos + 1)));
         } else if (optind < src_argc) {
             /* Argument is next word */
             optind++;
@@ -1314,10 +1313,10 @@ static int builtin_getopts(vm_t *vm, int argc, value_t *argv)
                 char pname[16];
                 snprintf(pname, sizeof(pname), "%d", optind);
                 variable_t *pv = environ_get(vm->env, pname);
-                next_arg = pv ? value_to_string(&pv->value) : xstrdup("");
+                next_arg = pv ? value_to_string(&pv->value) : rcstr_new("");
             }
             char optstr[2] = {opt_ch, '\0'};
-            environ_assign(vm->env, varname, value_string(xstrdup(optstr)));
+            environ_assign(vm->env, varname, value_string(rcstr_new(optstr)));
             environ_assign(vm->env, "OPTARG", value_string(next_arg));
         } else {
             /* Missing argument */
@@ -1326,17 +1325,17 @@ static int builtin_getopts(vm_t *vm, int argc, value_t *argv)
             }
             if (silent) {
                 char optstr[2] = {opt_ch, '\0'};
-                environ_assign(vm->env, varname, value_string(xstrdup(":")));
-                environ_assign(vm->env, "OPTARG", value_string(xstrdup(optstr)));
+                environ_assign(vm->env, varname, value_string(rcstr_new(":")));
+                environ_assign(vm->env, "OPTARG", value_string(rcstr_new(optstr)));
             } else {
-                environ_assign(vm->env, varname, value_string(xstrdup("?")));
+                environ_assign(vm->env, varname, value_string(rcstr_new("?")));
             }
         }
     } else {
         /* Simple option, no argument */
         char optstr[2] = {opt_ch, '\0'};
-        environ_assign(vm->env, varname, value_string(xstrdup(optstr)));
-        environ_assign(vm->env, "OPTARG", value_string(xstrdup("")));
+        environ_assign(vm->env, varname, value_string(rcstr_new(optstr)));
+        environ_assign(vm->env, "OPTARG", value_string(rcstr_new("")));
     }
 
     /* Advance position within bundled options or move to next arg */
@@ -1344,19 +1343,19 @@ static int builtin_getopts(vm_t *vm, int argc, value_t *argv)
         /* More options bundled in this arg */
         char buf[16];
         snprintf(buf, sizeof(buf), "%d", optpos + 1);
-        environ_assign(vm->env, "_OPTPOS", value_string(xstrdup(buf)));
+        environ_assign(vm->env, "_OPTPOS", value_string(rcstr_new(buf)));
     } else {
         /* Move to next argument */
-        environ_assign(vm->env, "_OPTPOS", value_string(xstrdup("1")));
+        environ_assign(vm->env, "_OPTPOS", value_string(rcstr_new("1")));
         optind++;
         char buf[16];
         snprintf(buf, sizeof(buf), "%d", optind);
-        environ_assign(vm->env, "OPTIND", value_string(xstrdup(buf)));
+        environ_assign(vm->env, "OPTIND", value_string(rcstr_new(buf)));
     }
 
-    free(cur_arg);
-    free(optstring);
-    free(varname);
+    rcstr_release(cur_arg);
+    rcstr_release(optstring);
+    rcstr_release(varname);
     return 0;
 }
 

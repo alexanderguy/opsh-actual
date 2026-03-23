@@ -882,10 +882,14 @@ int vm_run(vm_t *vm)
                     } else {
                         strbuf_append_str(&result, var_val);
                     }
-                    free(var_val);
-                    free(pat);
-                    free(rep);
-                    vm_push(vm, value_string(strbuf_detach(&result)));
+                    rcstr_release(var_val);
+                    rcstr_release(pat);
+                    rcstr_release(rep);
+                    {
+                        char *tmp = strbuf_detach(&result);
+                        vm_push(vm, value_string(rcstr_new(tmp)));
+                        free(tmp);
+                    }
                     break;
                 }
 
@@ -1208,8 +1212,12 @@ int vm_run(vm_t *vm)
                     strbuf_init(&result);
                     strbuf_append_str(&result, pw->pw_dir);
                     strbuf_append_str(&result, end);
-                    free(s);
-                    vm_push(vm, value_string(strbuf_detach(&result)));
+                    rcstr_release(s);
+                    {
+                        char *tmp = strbuf_detach(&result);
+                        vm_push(vm, value_string(rcstr_new(tmp)));
+                        free(tmp);
+                    }
                 } else {
                     vm_push(vm, value_string(s));
                 }
@@ -1549,7 +1557,7 @@ int vm_run(vm_t *vm)
                         fputc(' ', stderr);
                     }
                     fprintf(stderr, "%s", s);
-                    free(s);
+                    rcstr_release(s);
                 }
                 fputc('\n', stderr);
             }
@@ -1979,7 +1987,7 @@ int vm_run(vm_t *vm)
                 break;
             }
 
-            free(s);
+            rcstr_release(s);
             vm->laststatus = result;
             break;
         }
@@ -2085,8 +2093,8 @@ int vm_run(vm_t *vm)
                 break;
             }
 
-            free(lhs);
-            free(rhs);
+            rcstr_release(lhs);
+            rcstr_release(rhs);
             vm->laststatus = result;
             break;
         }
