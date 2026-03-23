@@ -145,6 +145,12 @@ static const char *opcode_name(uint8_t op)
         return "ERREXIT_PUSH";
     case OP_ERREXIT_POP:
         return "ERREXIT_POP";
+    case OP_STATUS_ZERO:
+        return "STATUS_ZERO";
+    case OP_PUSH_STATUS:
+        return "PUSH_STATUS";
+    case OP_POP_STATUS:
+        return "POP_STATUS";
     case OP_HALT:
         return "HALT";
     }

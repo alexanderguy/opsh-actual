@@ -2775,6 +2775,25 @@ int vm_run(vm_t *vm)
             }
             break;
 
+        case OP_STATUS_ZERO:
+            vm->laststatus = 0;
+            break;
+
+        case OP_PUSH_STATUS: {
+            value_t v;
+            v.type = VT_INTEGER;
+            v.data.integer = vm->laststatus;
+            vm_push(vm, v);
+            break;
+        }
+
+        case OP_POP_STATUS: {
+            value_t v = vm_pop(vm);
+            vm->laststatus = (int)v.data.integer;
+            value_destroy(&v);
+            break;
+        }
+
         case OP_HALT:
             vm_exit(vm, vm->laststatus);
             break;

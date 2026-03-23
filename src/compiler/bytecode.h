@@ -105,6 +105,9 @@ typedef enum {
     /* Shell option support */
     OP_ERREXIT_PUSH = 0x80, /* suppress errexit (entering if/while/&&/|| context) */
     OP_ERREXIT_POP = 0x81,  /* restore errexit */
+    OP_STATUS_ZERO = 0x82,  /* laststatus = 0 (POSIX: compound commands with no body) */
+    OP_PUSH_STATUS = 0x83,  /* push laststatus onto stack as VT_INTEGER */
+    OP_POP_STATUS = 0x84,   /* pop integer from stack into laststatus */
 
     /* Sentinel */
     OP_HALT = 0xFF,
