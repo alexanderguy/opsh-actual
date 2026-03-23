@@ -143,7 +143,7 @@ static void usage(const char *progname)
     fprintf(stderr, "  lsp                       start LSP server\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "options:\n");
-    fprintf(stderr, "  --agent-stdio   emit JSON-RPC events to stderr\n");
+    fprintf(stderr, "  serve             start session management server\n");
     fprintf(stderr, "  -h, --help      show this help\n");
 }
 
@@ -177,7 +177,7 @@ static bytecode_image_t *compile_script(const char *path)
 }
 
 /* Execute a bytecode image */
-static int run_image(bytecode_image_t *img, const char *filename, int agent_stdio, int script_argc,
+static int run_image(bytecode_image_t *img, const char *filename, int script_argc,
                      char **script_argv)
 {
     vm_t vm;
@@ -187,37 +187,7 @@ static int run_image(bytecode_image_t *img, const char *filename, int agent_stdi
         vm_set_args(&vm, script_argc, script_argv);
     }
 
-    event_sink_t *sink = NULL;
-    if (agent_stdio) {
-        int event_fd = dup(STDERR_FILENO);
-        {
-            int devnull = open("/dev/null", O_WRONLY);
-            if (devnull >= 0) {
-                dup2(devnull, STDERR_FILENO);
-                close(devnull);
-            }
-        }
-        sink = event_sink_stdio(event_fd);
-        vm.event_sink = sink;
-    }
-
-    {
-        event_t ev = {0};
-        ev.type = EVENT_SCRIPT_START;
-        ev.filename = filename;
-        event_emit(vm.event_sink, &ev);
-    }
-
     int status = vm_run(&vm);
-
-    {
-        event_t ev = {0};
-        ev.type = EVENT_SCRIPT_END;
-        ev.status = status;
-        event_emit(vm.event_sink, &ev);
-    }
-
-    event_sink_free(sink);
     vm_destroy(&vm);
 
     return status;
@@ -230,14 +200,7 @@ int main(int argc, char *argv[])
         bytecode_image_t *img = load_appended_image();
         if (img != NULL) {
             signal_init();
-            int agent_stdio = 0;
-            int i;
-            for (i = 1; i < argc; i++) {
-                if (strcmp(argv[i], "--agent-stdio") == 0) {
-                    agent_stdio = 1;
-                }
-            }
-            int status = run_image(img, argv[0], agent_stdio, argc - 1, argv + 1);
+            int status = run_image(img, argv[0], argc - 1, argv + 1);
             image_free(img);
             return status;
         }
@@ -246,7 +209,6 @@ int main(int argc, char *argv[])
     const char *script_path = NULL;
     const char *output_path = NULL;
     const char *c_string = NULL;
-    int agent_stdio = 0;
     int do_build = 0;
     int script_arg_start = 0; /* index of first script argument in argv */
     int i;
@@ -276,8 +238,10 @@ int main(int argc, char *argv[])
                 }
             }
             break;
-        } else if (strcmp(argv[i], "--agent-stdio") == 0) {
-            agent_stdio = 1;
+        } else if (strcmp(argv[i], "serve") == 0 && i == 1) {
+            /* TODO: implement serve_main() */
+            fprintf(stderr, "opsh: serve mode not yet implemented\n");
+            return 1;
         } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             output_path = argv[++i];
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -323,7 +287,7 @@ int main(int argc, char *argv[])
         const char *c_name = (sa_count > 0) ? sa_args[0] : "opsh";
         int c_argc = (sa_count > 1) ? sa_count - 1 : 0;
         char **c_argv = (sa_count > 1) ? sa_args + 1 : NULL;
-        int status = run_image(img, c_name, agent_stdio, c_argc, c_argv);
+        int status = run_image(img, c_name, c_argc, c_argv);
         image_free(img);
         return status;
     }
@@ -456,7 +420,7 @@ int main(int argc, char *argv[])
                 fprintf(stderr, "opsh: failed to load %s\n", script_path);
                 return 2;
             }
-            int status = run_image(img, script_path, agent_stdio, sa_count, sa_args);
+            int status = run_image(img, script_path, sa_count, sa_args);
             image_free(img);
             return status;
         }
@@ -468,7 +432,7 @@ int main(int argc, char *argv[])
         return 2;
     }
 
-    int status = run_image(img, script_path, agent_stdio, sa_count, sa_args);
+    int status = run_image(img, script_path, sa_count, sa_args);
     image_free(img);
 
     return status;
