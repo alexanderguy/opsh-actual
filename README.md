@@ -9,10 +9,11 @@ opsh compiles `.opsh` scripts to bytecode and executes them on a stack-based vir
 **What works:**
 
 - External command execution via fork/execvp with proper signal handling
-- Full word expansion: `$var`, `${var:-default}`, `${var#pat}`, `${var%pat}`, `${var/pat/rep}`, `${#var}`, `$(cmd)`, tilde expansion (`~`, `~/path`, `~user`)
+- Full word expansion: `$var`, `${var:-default}`, `${var#pat}`, `${var%pat}`, `${var/pat/rep}`, `${var/#pat/rep}`, `${var/%pat/rep}`, `${#var}`, `$(cmd)`, tilde expansion (`~`, `~/path`, `~user`)
 - Arithmetic: `$((expr))` with 14-level operator precedence, variables, assignment, ternary, short-circuit, pre/post increment
 - Control flow: `if`/`elif`/`else`, `for` (with and without `in` list), `while`/`until`, `case`, brace groups, subshells
-- `[[ ]]` expressions with file tests, string/numeric comparisons, glob matching, `=~` regex, `&&`, `||`, `!`, `!=`
+- Array variables: `arr=(a b c)`, `${arr[N]}`, `${arr[$i]}`, `arr[N]=val`, `${#arr[@]}`
+- `[[ ]]` expressions with file tests, string/numeric comparisons, glob matching, `=~` regex with `BASH_REMATCH` capture groups, `&&`, `||`, `!`, `!=`
 - Functions with positional parameters, `"$@"` with word boundary preservation, `shift`
 - Pipelines (`cmd1 | cmd2 | cmd3`) and and-or lists (`&&`, `||`, `!`)
 - I/O redirections (`<`, `>`, `>>`, `>|`, `<>`, `<&`, `>&`, `<<`, `<<-`, `<<<`)
@@ -29,7 +30,7 @@ opsh compiles `.opsh` scripts to bytecode and executes them on a stack-based vir
 - Bytecode serialization (`.opsb` format) and standalone binary compilation
 - Formatter (`opsh format`) and linter (`opsh lint`) with shellcheck-compatible output
 - LSP server (`opsh lsp`) with diagnostics and completion
-- 494 tests under ASan/UBSan, 6 fuzz targets
+- Comprehensive test suite under ASan/UBSan with libfuzzer harnesses
 
 **Known limitations:**
 
