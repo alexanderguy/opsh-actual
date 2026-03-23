@@ -2,6 +2,7 @@
 
 #include "builtins/builtins.h"
 #include "foundation/json.h"
+#include "foundation/jsonrpc.h"
 #include "foundation/strbuf.h"
 #include "foundation/util.h"
 #include "lint/lint.h"
@@ -10,325 +11,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-/*
- * Minimal JSON value extraction. Not a full parser -- just enough
- * to extract string/int values by key from a flat JSON object.
- */
-
-static const char *json_skip_ws(const char *p)
-{
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
-        p++;
-    }
-    return p;
-}
-
-static const char *json_skip_value(const char *p)
-{
-    p = json_skip_ws(p);
-    if (*p == '"') {
-        p++;
-        while (*p && *p != '"') {
-            if (*p == '\\') {
-                p++;
-            }
-            if (*p) {
-                p++;
-            }
-        }
-        if (*p == '"') {
-            p++;
-        }
-        return p;
-    }
-    if (*p == '{') {
-        int depth = 1;
-        p++;
-        while (*p && depth > 0) {
-            if (*p == '{') {
-                depth++;
-            } else if (*p == '}') {
-                depth--;
-            } else if (*p == '"') {
-                p = json_skip_value(p);
-                continue;
-            }
-            p++;
-        }
-        return p;
-    }
-    if (*p == '[') {
-        int depth = 1;
-        p++;
-        while (*p && depth > 0) {
-            if (*p == '[') {
-                depth++;
-            } else if (*p == ']') {
-                depth--;
-            } else if (*p == '"') {
-                p = json_skip_value(p);
-                continue;
-            }
-            p++;
-        }
-        return p;
-    }
-    /* number, bool, null */
-    while (*p && *p != ',' && *p != '}' && *p != ']') {
-        p++;
-    }
-    return p;
-}
-
-/* Extract a string value for a given key. Returns malloc'd string or NULL. */
-static char *json_get_string(const char *json, const char *key)
-{
-    const char *p = json_skip_ws(json);
-    if (*p != '{') {
-        return NULL;
-    }
-    p++;
-    while (*p) {
-        p = json_skip_ws(p);
-        if (*p == '}') {
-            break;
-        }
-        if (*p == ',') {
-            p++;
-            continue;
-        }
-        /* Read key */
-        if (*p != '"') {
-            break;
-        }
-        p++;
-        const char *ks = p;
-        while (*p && *p != '"') {
-            if (*p == '\\') {
-                p++;
-            }
-            if (*p) {
-                p++;
-            }
-        }
-        size_t klen = (size_t)(p - ks);
-        if (*p == '"') {
-            p++;
-        }
-        p = json_skip_ws(p);
-        if (*p == ':') {
-            p++;
-        }
-        p = json_skip_ws(p);
-
-        bool match = (klen == strlen(key) && memcmp(ks, key, klen) == 0);
-
-        if (match && *p == '"') {
-            /* Extract string value */
-            p++;
-            strbuf_t val;
-            strbuf_init(&val);
-            while (*p && *p != '"') {
-                if (*p == '\\' && p[1]) {
-                    p++;
-                    switch (*p) {
-                    case 'n':
-                        strbuf_append_byte(&val, '\n');
-                        break;
-                    case 't':
-                        strbuf_append_byte(&val, '\t');
-                        break;
-                    case '\\':
-                        strbuf_append_byte(&val, '\\');
-                        break;
-                    case '"':
-                        strbuf_append_byte(&val, '"');
-                        break;
-                    default:
-                        strbuf_append_byte(&val, *p);
-                        break;
-                    }
-                } else {
-                    strbuf_append_byte(&val, *p);
-                }
-                p++;
-            }
-            return strbuf_detach(&val);
-        }
-
-        /* Skip this value */
-        p = json_skip_value(p);
-    }
-    return NULL;
-}
-
-/* Extract an integer value for a given key. Returns the value or -1. */
-static int64_t json_get_int(const char *json, const char *key)
-{
-    const char *p = json_skip_ws(json);
-    if (*p != '{') {
-        return -1;
-    }
-    p++;
-    while (*p) {
-        p = json_skip_ws(p);
-        if (*p == '}') {
-            break;
-        }
-        if (*p == ',') {
-            p++;
-            continue;
-        }
-        if (*p != '"') {
-            break;
-        }
-        p++;
-        const char *ks = p;
-        while (*p && *p != '"') {
-            if (*p == '\\') {
-                p++;
-            }
-            if (*p) {
-                p++;
-            }
-        }
-        size_t klen = (size_t)(p - ks);
-        if (*p == '"') {
-            p++;
-        }
-        p = json_skip_ws(p);
-        if (*p == ':') {
-            p++;
-        }
-        p = json_skip_ws(p);
-
-        bool match = (klen == strlen(key) && memcmp(ks, key, klen) == 0);
-
-        if (match && (*p == '-' || (*p >= '0' && *p <= '9'))) {
-            return strtoll(p, NULL, 10);
-        }
-
-        p = json_skip_value(p);
-    }
-    return -1;
-}
-
-/*
- * Find a string value for a key anywhere in the JSON (brute-force scan).
- * Returns malloc'd string or NULL. Handles JSON string escapes.
- */
-static char *json_find_nested_string(const char *json, const char *key)
-{
-    char search[128];
-    snprintf(search, sizeof(search), "\"%s\"", key);
-    const char *pos = strstr(json, search);
-    if (pos == NULL) {
-        return NULL;
-    }
-    /* Skip past the key and colon */
-    pos += strlen(search);
-    pos = json_skip_ws(pos);
-    if (*pos == ':') {
-        pos++;
-    }
-    pos = json_skip_ws(pos);
-    if (*pos != '"') {
-        return NULL;
-    }
-    /* Extract the string value */
-    pos++;
-    strbuf_t val;
-    strbuf_init(&val);
-    while (*pos && *pos != '"') {
-        if (*pos == '\\' && pos[1]) {
-            pos++;
-            switch (*pos) {
-            case 'n':
-                strbuf_append_byte(&val, '\n');
-                break;
-            case 't':
-                strbuf_append_byte(&val, '\t');
-                break;
-            case '\\':
-                strbuf_append_byte(&val, '\\');
-                break;
-            case '"':
-                strbuf_append_byte(&val, '"');
-                break;
-            case '/':
-                strbuf_append_byte(&val, '/');
-                break;
-            default:
-                strbuf_append_byte(&val, *pos);
-                break;
-            }
-        } else {
-            strbuf_append_byte(&val, *pos);
-        }
-        pos++;
-    }
-    return strbuf_detach(&val);
-}
-
-/* Read a Content-Length framed message from stdin. Returns malloc'd body or NULL on EOF. */
-static char *read_message(void)
-{
-    /* Read headers until blank line */
-    int content_length = -1;
-    char line[256];
-
-    for (;;) {
-        if (fgets(line, sizeof(line), stdin) == NULL) {
-            return NULL;
-        }
-        if (line[0] == '\r' || line[0] == '\n') {
-            break; /* blank line = end of headers */
-        }
-        if (strncmp(line, "Content-Length:", 15) == 0) {
-            content_length = atoi(line + 15);
-        }
-    }
-
-    if (content_length <= 0) {
-        return NULL;
-    }
-
-    char *body = xmalloc((size_t)content_length + 1);
-    size_t nread = fread(body, 1, (size_t)content_length, stdin);
-    body[nread] = '\0';
-
-    if ((int)nread != content_length) {
-        free(body);
-        return NULL;
-    }
-
-    return body;
-}
-
-/* Write a Content-Length framed JSON response to stdout */
-static void send_response(const char *json)
-{
-    size_t len = strlen(json);
-    fprintf(stdout, "Content-Length: %zu\r\n\r\n", len);
-    fwrite(json, 1, len, stdout);
-    fflush(stdout);
-}
-
-/* Build and send a JSON-RPC response */
-static void send_result(int64_t id, const char *result_json)
-{
-    strbuf_t buf;
-    strbuf_init(&buf);
-    json_begin_object(&buf);
-    json_key_string(&buf, "jsonrpc", "2.0");
-    json_key_int(&buf, "id", id);
-    strbuf_append_str(&buf, ",\"result\":");
-    strbuf_append_str(&buf, result_json);
-    json_end_object(&buf);
-    send_response(buf.contents);
-    strbuf_destroy(&buf);
-}
 
 /* Map lint severity to LSP severity (1=Error, 2=Warning, 3=Info, 4=Hint) */
 static int lint_severity_to_lsp(lint_severity_t sev)
@@ -419,7 +101,7 @@ static void publish_diagnostics(const char *uri, const char *text)
 
     sh_list_free(ast);
     strbuf_append_str(&buf, "]}}");
-    send_response(buf.contents);
+    jsonrpc_send(stdout, buf.contents);
     strbuf_destroy(&buf);
     parser_destroy(&p);
 }
@@ -448,7 +130,7 @@ static void handle_completion(int64_t id)
     }
 
     strbuf_append_byte(&items, ']');
-    send_result(id, items.contents);
+    jsonrpc_send_result(stdout, id, items.contents);
     strbuf_destroy(&items);
 }
 
@@ -468,12 +150,12 @@ int lsp_handle_message(const char *msg)
         strbuf_append_str(&caps, "\"textDocumentSync\":1");
         strbuf_append_str(&caps, ",\"completionProvider\":{}");
         strbuf_append_str(&caps, "}}");
-        send_result(id, caps.contents);
+        jsonrpc_send_result(stdout, id, caps.contents);
         strbuf_destroy(&caps);
     } else if (strcmp(method, "initialized") == 0) {
         /* No-op notification */
     } else if (strcmp(method, "shutdown") == 0) {
-        send_result(id, "null");
+        jsonrpc_send_result(stdout, id, "null");
     } else if (strcmp(method, "exit") == 0) {
         free(method);
         return 0; /* stop */
@@ -497,7 +179,7 @@ int lsp_handle_message(const char *msg)
 int lsp_main(void)
 {
     for (;;) {
-        char *msg = read_message();
+        char *msg = jsonrpc_read_message(stdin);
         if (msg == NULL) {
             break;
         }

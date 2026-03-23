@@ -1,5 +1,6 @@
 #include "vm/arith.h"
 
+#include "foundation/rcstr.h"
 #include "foundation/util.h"
 
 #include <ctype.h>
@@ -80,8 +81,7 @@ static void set_var(arith_state_t *s, const char *name, int64_t val)
     }
     char buf[32];
     snprintf(buf, sizeof(buf), "%" PRId64, val);
-    char *str = xstrdup(buf);
-    environ_assign(s->env, name, value_string(str));
+    environ_assign(s->env, name, value_string(rcstr_new(buf)));
 }
 
 /* Parse an identifier name. Returns malloc'd string or NULL. */
