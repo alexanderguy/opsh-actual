@@ -2209,6 +2209,65 @@ int vm_run(vm_t *vm)
             break;
         }
 
+        case OP_BACKGROUND: {
+            uint32_t sub_offset = (uint32_t)read_u8(vm);
+            sub_offset |= (uint32_t)read_u8(vm) << 8;
+            sub_offset |= (uint32_t)read_u8(vm) << 16;
+            sub_offset |= (uint32_t)read_u8(vm) << 24;
+
+            int64_t bg_cmd_id = vm->next_command_id++;
+            {
+                event_t ev = {0};
+                ev.type = EVENT_COMMAND_START;
+                ev.id = bg_cmd_id;
+                ev.name = "(background)";
+                event_emit(vm->event_sink, &ev);
+            }
+
+            fflush(stdout);
+            fflush(stderr);
+
+            pid_t pid = fork();
+            if (pid < 0) {
+                fprintf(stderr, "opsh: fork failed\n");
+                vm->laststatus = 1;
+            } else if (pid == 0) {
+                /* Child: run the background command */
+                signal_reset();
+                free(vm->exit_trap);
+                vm->exit_trap = NULL;
+                vm->event_sink = NULL;
+                vm->opt_errexit = false; /* POSIX: errexit disabled in async */
+                /* POSIX: stdin redirected to /dev/null for async commands */
+                {
+                    int devnull = open("/dev/null", O_RDONLY);
+                    if (devnull >= 0 && devnull != STDIN_FILENO) {
+                        dup2(devnull, STDIN_FILENO);
+                        close(devnull);
+                    }
+                }
+                vm->ip = (size_t)sub_offset;
+                vm->halted = false;
+                int child_status = vm_run(vm);
+                fflush(stdout);
+                fflush(stderr);
+                _exit(child_status);
+            } else {
+                /* Parent: record PID, don't wait */
+                vm->last_bg_pid = pid;
+                vm->laststatus = 0;
+            }
+
+            {
+                event_t ev = {0};
+                ev.type = EVENT_COMMAND_END;
+                ev.id = bg_cmd_id;
+                ev.status = vm->laststatus;
+                event_emit(vm->event_sink, &ev);
+            }
+            break;
+        }
+
         case OP_PIPELINE: {
             /* Read cmd_count, then collect PIPELINE_CMD offsets */
             uint16_t cmd_count = read_u16(vm);

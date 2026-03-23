@@ -692,9 +692,9 @@ static void compile_simple(compiler_t *cc, command_t *cmd)
             if (assign_tilde) {
                 image_emit_u8(cc->image, OP_EXPAND_TILDE);
             }
-            image_emit_u8(cc->image,
-                          is_local_var(cc, cc->image->const_pool[name_idx]) ? OP_SET_LOCAL
-                                                                            : OP_SET_VAR);
+            image_emit_u8(cc->image, is_local_var(cc, cc->image->const_pool[name_idx])
+                                         ? OP_SET_LOCAL
+                                         : OP_SET_VAR);
             image_emit_u16(cc->image, name_idx);
             /* For prefix assignments, mark the variable for export to child */
             if (temp_assigns) {
@@ -1592,7 +1592,22 @@ static void compile_program(compiler_t *cc, sh_list_t *program)
 {
     sh_list_t *ao;
     for (ao = program; ao != NULL; ao = ao->next) {
-        compile_sh_list(cc, ao);
+        if (ao->background) {
+            /* Background command: compile body as sub-segment */
+            size_t skip_jump = emit_jump(cc, OP_JMP);
+            size_t sub_offset = cc->image->code_size;
+            compile_sh_list(cc, ao);
+            image_emit_u8(cc->image, OP_HALT);
+            patch_jump(cc, skip_jump);
+            image_emit_u8(cc->image, OP_BACKGROUND);
+            uint32_t uoff = (uint32_t)sub_offset;
+            image_emit_u8(cc->image, (uint8_t)(uoff & 0xFF));
+            image_emit_u8(cc->image, (uint8_t)((uoff >> 8) & 0xFF));
+            image_emit_u8(cc->image, (uint8_t)((uoff >> 16) & 0xFF));
+            image_emit_u8(cc->image, (uint8_t)((uoff >> 24) & 0xFF));
+        } else {
+            compile_sh_list(cc, ao);
+        }
     }
 }
 

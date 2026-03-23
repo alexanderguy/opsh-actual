@@ -82,6 +82,7 @@ typedef enum {
     OP_PIPELINE_END = 0x45, /* u8 flags */
     OP_CMD_SUBST = 0x46,    /* u32 bytecode_offset */
     OP_SUBSHELL = 0x47,     /* u32 bytecode_offset */
+    OP_BACKGROUND = 0x48,   /* u32 bytecode_offset */
 
     /* Redirection */
     OP_REDIR_SAVE = 0x50,
@@ -200,6 +201,7 @@ static inline int opcode_operand_size(opcode_t op)
     case OP_PIPELINE_CMD:
     case OP_CMD_SUBST:
     case OP_SUBSHELL:
+    case OP_BACKGROUND:
         return 4; /* u32 */
     case OP_PUSH_SCOPE:
     case OP_GET_SPECIAL:
