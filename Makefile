@@ -57,7 +57,7 @@ TEST_FOUNDATION_SRCS = tests/foundation/test_strbuf.c \
                        tests/foundation/test_util.c
 TEST_PARSER_SRCS = tests/parser/test_lexer.c tests/parser/test_parser.c
 TEST_VM_SRCS = tests/vm/test_vm.c tests/vm/test_variable.c tests/vm/test_arith.c tests/vm/test_image_io.c
-TEST_COMPILER_SRCS = tests/compiler/test_compiler.c
+TEST_COMPILER_SRCS = tests/compiler/test_compiler.c tests/compiler/test_features.c
 TEST_FORMAT_SRCS = tests/format/test_format.c
 TEST_LINT_SRCS = tests/lint/test_lint.c
 TEST_LSP_SRCS = tests/lsp/test_lsp.c
