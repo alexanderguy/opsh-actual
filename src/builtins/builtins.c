@@ -1,5 +1,6 @@
 #include "builtins/builtins.h"
 
+#include "exec/job.h"
 #include "exec/signal.h"
 #include "exec/variable.h"
 #include "foundation/rcstr.h"
@@ -966,37 +967,86 @@ static int builtin_exec(vm_t *vm, int argc, value_t *argv)
 
 static int builtin_wait(vm_t *vm, int argc, value_t *argv)
 {
-    (void)vm;
+    job_table_t *jt = &vm->job_table;
+
     if (argc < 2) {
-        /* Wait for all children */
+        /* Wait for all jobs to terminate via job_wait_fg for each.
+         * This avoids raw waitpid(-1) which could double-reap.
+         * POSIX: wait for all known children, including stopped ones. */
         int last_status = 0;
-        int wstatus;
-        pid_t wp;
-        while ((wp = waitpid(-1, &wstatus, 0)) > 0 || (wp < 0 && errno == EINTR)) {
-            if (wp < 0) {
-                continue;
+        for (;;) {
+            job_update(jt);
+            /* Find first non-done job (running or stopped) */
+            int found = -1;
+            int i;
+            for (i = 0; i < jt->count; i++) {
+                if (jt->jobs[i].state != JOB_DONE) {
+                    found = jt->jobs[i].id;
+                    break;
+                }
             }
-            if (WIFEXITED(wstatus)) {
-                last_status = WEXITSTATUS(wstatus);
-            } else if (WIFSIGNALED(wstatus)) {
-                last_status = 128 + WTERMSIG(wstatus);
+            if (found < 0) {
+                break;
+            }
+            /* If the job is stopped, resume it so it can finish */
+            job_t *target = job_find_by_id(jt, found);
+            if (target != NULL && target->state == JOB_STOPPED) {
+                kill(-target->pgid, SIGCONT);
+                target->state = JOB_RUNNING;
+            }
+            last_status = job_wait_fg(jt, found);
+            job_t *j = job_find_by_id(jt, found);
+            if (j != NULL && j->state == JOB_DONE) {
+                j->notified = true;
             }
         }
+        job_reap_done(jt);
         return last_status;
     }
 
+    /* Wait for specific job or PID */
+    char *arg = value_to_string(&argv[1]);
+
+    /* Check for %N job spec */
+    if (arg[0] == '%') {
+        job_t *j = job_parse_spec(jt, arg);
+        rcstr_release(arg);
+        if (j == NULL) {
+            fprintf(stderr, "opsh: wait: no such job\n");
+            return 127;
+        }
+        int status = job_wait_fg(jt, j->id);
+        if (j->state == JOB_DONE) {
+            j->notified = true;
+            job_reap_done(jt);
+        }
+        return status;
+    }
+
     /* Wait for specific PID */
-    char *pid_str = value_to_string(&argv[1]);
     char *endp;
-    long pval = strtol(pid_str, &endp, 10);
+    long pval = strtol(arg, &endp, 10);
     if (*endp != '\0') {
-        fprintf(stderr, "opsh: wait: %s: invalid pid\n", pid_str);
-        rcstr_release(pid_str);
+        fprintf(stderr, "opsh: wait: %s: invalid pid\n", arg);
+        rcstr_release(arg);
         return 2;
     }
     pid_t pid = (pid_t)pval;
-    rcstr_release(pid_str);
+    rcstr_release(arg);
 
+    /* Check if this PID is in the job table */
+    job_t *j = job_find_by_pid(jt, pid);
+    if (j != NULL) {
+        int status = job_wait_fg(jt, j->id);
+        if (j->state == JOB_DONE) {
+            j->notified = true;
+            job_reap_done(jt);
+        }
+        return status;
+    }
+
+    /* Not in job table — direct wait for specific PID is safe since
+     * it can't collide with job_update (which uses WNOHANG). */
     int wstatus;
     pid_t wp;
     while ((wp = waitpid(pid, &wstatus, 0)) < 0 && errno == EINTR) {
@@ -1057,6 +1107,24 @@ static int builtin_kill(vm_t *vm, int argc, value_t *argv)
     int i;
     for (i = pid_start; i < argc; i++) {
         char *ps = value_to_string(&argv[i]);
+
+        /* Check for %N job spec */
+        if (ps[0] == '%') {
+            job_t *j = job_parse_spec(&vm->job_table, ps);
+            rcstr_release(ps);
+            if (j == NULL) {
+                fprintf(stderr, "opsh: kill: no such job\n");
+                result = 1;
+                continue;
+            }
+            /* Send signal to entire process group */
+            if (kill(-j->pgid, signo) != 0) {
+                fprintf(stderr, "opsh: kill: %%%d: %s\n", j->id, strerror(errno));
+                result = 1;
+            }
+            continue;
+        }
+
         char *endp;
         long pval = strtol(ps, &endp, 10);
         if (*endp != '\0') {
@@ -1359,17 +1427,180 @@ static int builtin_getopts(vm_t *vm, int argc, value_t *argv)
     return 0;
 }
 
+static int builtin_jobs(vm_t *vm, int argc, value_t *argv)
+{
+    (void)argc;
+    (void)argv;
+    job_table_t *jt = &vm->job_table;
+
+    /* Reap before displaying */
+    job_update(jt);
+
+    bool long_format = false;
+    if (argc >= 2) {
+        char *flag = value_to_string(&argv[1]);
+        if (strcmp(flag, "-l") == 0) {
+            long_format = true;
+        }
+        rcstr_release(flag);
+    }
+
+    int i;
+    for (i = 0; i < jt->count; i++) {
+        job_t *j = &jt->jobs[i];
+        const char *state_str = "Running";
+        if (j->state == JOB_STOPPED) {
+            state_str = "Stopped";
+        } else if (j->state == JOB_DONE) {
+            state_str = "Done";
+        }
+
+        char indicator = ' ';
+        if (j->id == jt->current) {
+            indicator = '+';
+        } else if (j->id == jt->previous) {
+            indicator = '-';
+        }
+
+        char buf[256];
+        if (long_format) {
+            snprintf(buf, sizeof(buf), "[%d] %c %d %-10s %s\n", j->id, indicator, (int)j->pgid,
+                     state_str, j->command ? j->command : "");
+        } else {
+            snprintf(buf, sizeof(buf), "[%d] %c %-10s %s\n", j->id, indicator, state_str,
+                     j->command ? j->command : "");
+        }
+        write_fd1(buf, strlen(buf));
+
+        if (j->state == JOB_DONE) {
+            j->notified = true;
+        }
+    }
+
+    job_reap_done(jt);
+    return 0;
+}
+
+static int builtin_fg(vm_t *vm, int argc, value_t *argv)
+{
+    job_table_t *jt = &vm->job_table;
+    job_t *j;
+
+    if (argc >= 2) {
+        char *spec = value_to_string(&argv[1]);
+        j = job_parse_spec(jt, spec);
+        if (j == NULL) {
+            fprintf(stderr, "opsh: fg: %s: no such job\n", spec);
+            rcstr_release(spec);
+            return 1;
+        }
+        rcstr_release(spec);
+    } else {
+        j = job_current(jt);
+        if (j == NULL) {
+            fprintf(stderr, "opsh: fg: no current job\n");
+            return 1;
+        }
+    }
+
+    /* Resume the job if stopped */
+    if (j->state == JOB_STOPPED) {
+        kill(-j->pgid, SIGCONT);
+        j->state = JOB_RUNNING;
+    }
+
+    /* Give it the terminal if we have one */
+    if (isatty(STDIN_FILENO)) {
+        tcsetpgrp(STDIN_FILENO, j->pgid);
+    }
+
+    /* Wait for the job */
+    int status = job_wait_fg(jt, j->id);
+
+    /* Restore our process group as foreground */
+    if (isatty(STDIN_FILENO)) {
+        tcsetpgrp(STDIN_FILENO, getpgrp());
+    }
+
+    if (j->state == JOB_DONE) {
+        j->notified = true;
+        job_reap_done(jt);
+    }
+
+    return status;
+}
+
+static int builtin_bg(vm_t *vm, int argc, value_t *argv)
+{
+    job_table_t *jt = &vm->job_table;
+    job_t *j;
+
+    if (argc >= 2) {
+        char *spec = value_to_string(&argv[1]);
+        j = job_parse_spec(jt, spec);
+        if (j == NULL) {
+            fprintf(stderr, "opsh: bg: %s: no such job\n", spec);
+            rcstr_release(spec);
+            return 1;
+        }
+        rcstr_release(spec);
+    } else {
+        j = job_current(jt);
+        if (j == NULL) {
+            fprintf(stderr, "opsh: bg: no current job\n");
+            return 1;
+        }
+    }
+
+    if (j->state != JOB_STOPPED) {
+        fprintf(stderr, "opsh: bg: job %d is not stopped\n", j->id);
+        return 1;
+    }
+
+    kill(-j->pgid, SIGCONT);
+    j->state = JOB_RUNNING;
+
+    char buf[256];
+    snprintf(buf, sizeof(buf), "[%d] %s &\n", j->id, j->command ? j->command : "");
+    write_fd1(buf, strlen(buf));
+
+    return 0;
+}
+
 const builtin_entry_t builtin_table[] = {
-    {"echo", builtin_echo},         {"exit", builtin_exit},       {"true", builtin_true},
-    {"false", builtin_false},       {":", builtin_true},          {"cd", builtin_cd},
-    {"pwd", builtin_pwd},           {"export", builtin_export},   {"unset", builtin_unset},
-    {"readonly", builtin_readonly}, {"local", builtin_local},     {"shift", builtin_shift},
-    {"test", builtin_test},         {"[", builtin_test},          {"printf", builtin_printf},
-    {"read", builtin_read},         {"return", builtin_return},   {"type", builtin_type},
-    {"trap", builtin_trap},         {"eval", builtin_eval},       {".", builtin_dot},
-    {"source", builtin_dot},        {"command", builtin_command}, {"exec", builtin_exec},
-    {"wait", builtin_wait},         {"kill", builtin_kill},       {"umask", builtin_umask},
-    {"set", builtin_set},           {"getopts", builtin_getopts}, {NULL, NULL},
+    {"echo", builtin_echo},
+    {"exit", builtin_exit},
+    {"true", builtin_true},
+    {"false", builtin_false},
+    {":", builtin_true},
+    {"cd", builtin_cd},
+    {"pwd", builtin_pwd},
+    {"export", builtin_export},
+    {"unset", builtin_unset},
+    {"readonly", builtin_readonly},
+    {"local", builtin_local},
+    {"shift", builtin_shift},
+    {"test", builtin_test},
+    {"[", builtin_test},
+    {"printf", builtin_printf},
+    {"read", builtin_read},
+    {"return", builtin_return},
+    {"type", builtin_type},
+    {"trap", builtin_trap},
+    {"eval", builtin_eval},
+    {".", builtin_dot},
+    {"source", builtin_dot},
+    {"command", builtin_command},
+    {"exec", builtin_exec},
+    {"wait", builtin_wait},
+    {"kill", builtin_kill},
+    {"umask", builtin_umask},
+    {"set", builtin_set},
+    {"getopts", builtin_getopts},
+    {"fg", builtin_fg},
+    {"bg", builtin_bg},
+    {"jobs", builtin_jobs},
+    {NULL, NULL},
 };
 
 int builtin_lookup(const char *name)

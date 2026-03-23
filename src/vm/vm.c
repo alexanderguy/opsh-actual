@@ -168,6 +168,7 @@ void vm_init(vm_t *vm, bytecode_image_t *image)
     vm->env = environ_new(NULL, false);
     vm->laststatus = 0;
     vm->halted = false;
+    job_table_init(&vm->job_table);
 }
 
 void vm_register_func(vm_t *vm, const char *name, size_t offset)
@@ -223,6 +224,8 @@ void vm_destroy(vm_t *vm)
         free(vm->exit_trap);
         vm->exit_trap = NULL;
     }
+
+    job_table_destroy(&vm->job_table);
 }
 
 void vm_set_args(vm_t *vm, int argc, char **argv)
@@ -285,8 +288,8 @@ int vm_exec_string(vm_t *vm, const char *source, const char *label)
                 }
             }
             if (!conflict) {
-                sub.func_table = xrealloc(sub.func_table,
-                                          ((size_t)sub.func_count + 1) * sizeof(vm_func_t));
+                sub.func_table =
+                    xrealloc(sub.func_table, ((size_t)sub.func_count + 1) * sizeof(vm_func_t));
                 sub.func_table[sub.func_count].name = vm->func_table[pi].name;
                 sub.func_table[sub.func_count].bytecode_offset = vm->func_table[pi].bytecode_offset;
                 sub.func_table[sub.func_count].image = vm->func_table[pi].image;
@@ -1767,6 +1770,7 @@ int vm_run(vm_t *vm)
                     } else if (pid == 0) {
                         /* Child: export shell vars to C env, reset signals */
                         signal_reset();
+                        job_table_reset(&vm->job_table);
                         environ_export_to_c(vm->env);
                         execvp(exec_argv[0], exec_argv);
                         /* execvp failed */
@@ -2157,6 +2161,7 @@ int vm_run(vm_t *vm)
             if (pid == 0) {
                 /* Child: restore signal defaults, clear traps */
                 signal_reset();
+                job_table_reset(&vm->job_table);
                 free(vm->exit_trap);
                 vm->exit_trap = NULL;
                 vm->event_sink = NULL; /* children don't emit events */
@@ -2244,6 +2249,7 @@ int vm_run(vm_t *vm)
             if (pid == 0) {
                 /* Child: run the subshell body */
                 signal_reset();
+                job_table_reset(&vm->job_table);
                 free(vm->exit_trap);
                 vm->exit_trap = NULL;
                 vm->event_sink = NULL;
@@ -2303,8 +2309,10 @@ int vm_run(vm_t *vm)
                 fprintf(stderr, "opsh: fork failed\n");
                 vm->laststatus = 1;
             } else if (pid == 0) {
-                /* Child: run the background command */
+                /* Child: create own process group */
+                setpgid(0, 0);
                 signal_reset();
+                job_table_reset(&vm->job_table);
                 free(vm->exit_trap);
                 vm->exit_trap = NULL;
                 vm->event_sink = NULL;
@@ -2324,9 +2332,18 @@ int vm_run(vm_t *vm)
                 fflush(stderr);
                 _exit(child_status);
             } else {
-                /* Parent: record PID, don't wait */
+                /* Parent: both sides call setpgid to avoid race */
+                setpgid(pid, pid); /* may fail with EACCES if child ran first — OK */
                 vm->last_bg_pid = pid;
                 vm->laststatus = 0;
+                /* Register as a job */
+                {
+                    pid_t *bg_pids = xmalloc(sizeof(pid_t));
+                    bg_pids[0] = pid;
+                    if (job_add(&vm->job_table, pid, bg_pids, 1, "(background)") < 0) {
+                        free(bg_pids);
+                    }
+                }
             }
 
             {
@@ -2384,8 +2401,12 @@ int vm_run(vm_t *vm)
                 goto pipeline_done;
             }
 
-            /* Create pipes and fork children */
+            /* Create pipes and fork children.
+             * All pipeline members share a process group (pgid = first child's PID).
+             * Both parent and child call setpgid to avoid race conditions;
+             * the loser gets EACCES/EPERM which is silently ignored. */
             pid_t *pids = xcalloc((size_t)cmd_count, sizeof(pid_t));
+            pid_t pgid = 0; /* set after first fork */
             int prev_read_fd = -1;
 
             for (pi = 0; pi < (int)cmd_count; pi++) {
@@ -2414,11 +2435,17 @@ int vm_run(vm_t *vm)
                 }
 
                 if (pid == 0) {
-                    /* Child: restore signal defaults, clear traps */
+                    /* Child: join the pipeline's process group */
+                    if (pgid == 0) {
+                        setpgid(0, 0); /* first child creates the group */
+                    } else {
+                        setpgid(0, pgid); /* subsequent children join it */
+                    }
                     signal_reset();
+                    job_table_reset(&vm->job_table);
                     free(vm->exit_trap);
                     vm->exit_trap = NULL;
-                    vm->event_sink = NULL; /* children don't emit events */
+                    vm->event_sink = NULL;
                     if (prev_read_fd >= 0) {
                         dup2(prev_read_fd, STDIN_FILENO);
                         close(prev_read_fd);
@@ -2439,8 +2466,14 @@ int vm_run(vm_t *vm)
                     }
                 }
 
-                /* Parent */
+                /* Parent: record PID and set process group */
                 pids[pi] = pid;
+                if (pi == 0) {
+                    pgid = pid; /* first child's PID is the group ID */
+                }
+                /* Both parent and child call setpgid — loser gets EACCES, which is fine */
+                setpgid(pid, pgid);
+
                 if (prev_read_fd >= 0) {
                     close(prev_read_fd);
                 }
@@ -2457,24 +2490,25 @@ int vm_run(vm_t *vm)
                 close(prev_read_fd);
             }
 
-            /* Wait for all children */
-            {
-                int last_status = 0;
-                int wi;
-                for (wi = 0; wi < (int)cmd_count; wi++) {
-                    if (pids[wi] > 0) {
-                        int wstatus;
-                        while (waitpid(pids[wi], &wstatus, 0) < 0 && errno == EINTR) {
-                            /* retry */
-                        }
-                        if (WIFEXITED(wstatus)) {
-                            last_status = WEXITSTATUS(wstatus);
-                        } else {
-                            last_status = 1;
-                        }
+            /* Register the pipeline as a job and wait via job table.
+             * Use pi (not cmd_count) — if fork/pipe failed mid-pipeline,
+             * pi is the number of children actually forked. */
+            int forked_count = pi;
+            if (pgid > 0 && forked_count > 0) {
+                pid_t *job_pids = xmalloc((size_t)forked_count * sizeof(pid_t));
+                memcpy(job_pids, pids, (size_t)forked_count * sizeof(pid_t));
+                int job_id = job_add(&vm->job_table, pgid, job_pids, forked_count, "(pipeline)");
+                if (job_id > 0) {
+                    vm->laststatus = job_wait_fg(&vm->job_table, job_id);
+                    /* Mark as notified so it gets reaped */
+                    job_t *j = job_find_by_id(&vm->job_table, job_id);
+                    if (j != NULL && j->state == JOB_DONE) {
+                        j->notified = true;
+                        job_reap_done(&vm->job_table);
                     }
+                } else {
+                    free(job_pids); /* job_add failed (table full), we still own pids */
                 }
-                vm->laststatus = last_status;
             }
 
             if (negate) {

@@ -88,11 +88,12 @@ variable storage.
 | EXEC_SIMPLE | 0x40 | u8 flags | arg₁..argₙ argc → | Execute: try functions, builtins, then fork/execvp |
 | EXEC_BUILTIN | 0x41 | u16 builtin_idx | arg₁..argₙ argc → | Call builtin by compile-time index |
 | EXEC_FUNC | 0x42 | u16 func_idx | arg₁..argₙ argc → | Call function by compile-time index |
-| PIPELINE | 0x43 | u16 cmd_count | — | Fork N children with pipes; followed by PIPELINE_CMD/END |
+| PIPELINE | 0x43 | u16 cmd_count | — | Fork N children in shared process group with pipes; followed by PIPELINE_CMD/END |
 | PIPELINE_CMD | 0x44 | u32 offset | — | Pipeline member (consumed by PIPELINE) |
 | PIPELINE_END | 0x45 | u8 flags | — | Pipeline terminator (flags: bit 0 = negate status) |
 | CMD_SUBST | 0x46 | u32 offset | → value | Fork, capture stdout, push as string |
 | SUBSHELL | 0x47 | u32 offset | — | Fork, run sub-segment, wait, collect status |
+| BACKGROUND | 0x48 | u32 offset | — | Fork in new process group, run sub-segment, register as job, don't wait |
 
 ### Redirection
 
@@ -211,6 +212,56 @@ variable storage.
 | ID | Operator | Description |
 |----|----------|-------------|
 | 60 | =~ | Extended regex match; populates BASH_REMATCH |
+
+## Job control
+
+The VM maintains a job table (`job_table_t`) that tracks background processes
+and pipelines. Each job has a process group ID (PGID), an array of member PIDs,
+and a state (running, stopped, or done).
+
+### Process groups
+
+- **OP_BACKGROUND**: The child creates its own process group via `setpgid(0, 0)`.
+  Both parent and child call `setpgid` to avoid races (loser gets EACCES, ignored).
+  The job is registered in the table.
+- **OP_PIPELINE**: All pipeline members share a process group. The first child
+  creates the group; subsequent children join via `setpgid(0, pgid)`. The parent
+  calls `setpgid(child, pgid)` for each child. Foreground pipelines are waited
+  via `job_wait_fg()`.
+- **OP_EXEC_SIMPLE**, **OP_CMD_SUBST**, **OP_SUBSHELL**: Foreground operations.
+  Not registered in the job table. Wait directly by PID.
+
+### waitpid ownership
+
+`job_update()` (non-blocking, `WNOHANG|WUNTRACED|WCONTINUED`) and `job_wait_fg()`
+(blocking, `WUNTRACED`) are the primary callers of `waitpid` for job-table processes.
+The `wait` builtin routes through the job table to avoid double-reap races.
+
+### Signals
+
+- **SIGCHLD**: Handler sets a pending flag. Drained at well-defined points (before
+  `jobs` output, before `wait` examination).
+- **SIGTSTP**: Shell ignores it (`SIG_IGN`). Children get `SIG_DFL` after fork.
+- **SIGCONT**: Sent by `fg`/`bg` builtins via `kill(-pgid, SIGCONT)`.
+- **SIGTTIN/SIGTTOU**: Shell ignores them to avoid stopping on background terminal I/O.
+
+### Builtins
+
+- **jobs** [`-l`]: List active jobs with state and command. `-l` includes PIDs.
+- **fg** [`%spec`]: Resume stopped job in foreground, or bring running job to foreground.
+- **bg** [`%spec`]: Resume stopped job in background.
+- **wait** [`%spec` | `pid`]: Wait for job or PID. No args waits for all.
+- **kill** [`-signal`] [`%spec` | `pid`...]: Send signal to job's process group or PID.
+
+### Job specs
+
+| Spec | Meaning |
+|------|---------|
+| `%N` | Job number N |
+| `%%` or `%+` | Current (most recent) job |
+| `%-` | Previous job |
+| `%?string` | Job whose command contains string |
+| `%string` | Job whose command starts with string |
 
 ## Bytecode image format
 

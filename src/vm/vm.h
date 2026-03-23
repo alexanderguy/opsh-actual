@@ -3,6 +3,7 @@
 
 #include "agent/event.h"
 #include "compiler/bytecode.h"
+#include "exec/job.h"
 #include "exec/variable.h"
 #include "opsh/value.h"
 
@@ -146,6 +147,8 @@ typedef struct vm {
     const char *script_name; /* $0 */
     pid_t last_bg_pid;       /* $! */
     char option_flags[16];   /* $- */
+
+    job_table_t job_table; /* job control state */
 
     /* Shell options (set -e, -u, -x) */
     bool opt_errexit;       /* -e */

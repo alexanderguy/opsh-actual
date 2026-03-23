@@ -187,12 +187,23 @@ Here-documents use `mkstemp` temporary files (immediately unlinked) to avoid pip
 
 ### Signal handling
 
-Deferred model: SIGINT/SIGTERM handlers set `volatile sig_atomic_t` flags. The VM checks for pending signals at the top of each dispatch loop iteration (safe point). If a trap handler is registered, it is parsed, compiled, and executed in a fresh VM with shared environment. SIGPIPE is ignored in the parent shell. Signal defaults are restored in child processes after fork.
+Deferred model: SIGINT/SIGTERM/SIGCHLD handlers set `volatile sig_atomic_t` flags. The VM checks for pending signals at the top of each dispatch loop iteration (safe point). If a trap handler is registered, it is parsed, compiled, and executed in a fresh VM with shared environment. SIGPIPE, SIGTSTP, SIGTTIN, and SIGTTOU are ignored in the parent shell. Signal defaults are restored in child processes after fork.
+
+
+## Job Control
+
+The VM maintains a job table (`job_table_t` on `vm_t`) that tracks background commands and pipelines as jobs. Each job has a process group ID, member PIDs, state (running/stopped/done), and command string.
+
+Background commands (`&`) and pipelines create their own process groups via `setpgid`. Both parent and child call `setpgid` after fork to avoid races; the losing side silently ignores `EACCES`. For pipelines, the first child creates the group and subsequent children join it.
+
+`job_update()` is the primary reaper — it calls `waitpid(-1, WNOHANG|WUNTRACED|WCONTINUED)` in a loop. `job_wait_fg()` does blocking waits for foreground jobs with signal forwarding (SIGINT delivered to the job's process group). The `wait` builtin routes through the job table to prevent double-reap races.
+
+Builtins `fg`, `bg`, and `jobs` manage job state. `wait` and `kill` accept `%N` job specs that resolve to process groups. `fg` uses `tcsetpgrp` (guarded by `isatty`) to transfer terminal ownership.
 
 
 ## Builtins
 
-19 builtins: `echo`, `exit`, `true`, `false`, `:`, `cd`, `pwd`, `export`, `unset`, `readonly`, `local`, `shift`, `test`/`[`, `printf`, `read`, `return`, `type`, `trap`.
+30 builtins: `echo`, `exit`, `true`, `false`, `:`, `cd`, `pwd`, `export`, `unset`, `readonly`, `local`, `shift`, `test`/`[`, `printf`, `read`, `return`, `type`, `trap`, `eval`, `.`/`source`, `command`, `exec`, `wait`, `kill`, `umask`, `set`, `getopts`, `fg`, `bg`, `jobs`.
 
 Builtins write to fd 1 via `write()` (not `fputs`) so redirections take effect. The `return` builtin sets a `return_requested` flag on the VM; the dispatch loop checks it after `EXEC_BUILTIN` and triggers call frame unwind.
 
