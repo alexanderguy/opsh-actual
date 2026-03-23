@@ -19,7 +19,7 @@ FOUNDATION_SRCS = src/foundation/util.c src/foundation/strbuf.c \
                   src/foundation/json.c src/foundation/jsonrpc.c
 PARSER_SRCS = src/parser/ast.c src/parser/lexer.c src/parser/parser.c
 VM_SRCS = src/vm/value.c src/vm/vm.c src/vm/disasm.c src/vm/image_io.c src/vm/arith.c
-EXEC_SRCS = src/exec/variable.c src/exec/signal.c
+EXEC_SRCS = src/exec/variable.c src/exec/signal.c src/exec/job.c
 BUILTIN_SRCS = src/builtins/builtins.c
 COMPILER_SRCS = src/compiler/compiler.c
 AGENT_SRCS = src/agent/event.c
@@ -65,6 +65,7 @@ TEST_LINT_SRCS = tests/lint/test_lint.c
 TEST_LSP_SRCS = tests/lsp/test_lsp.c
 TEST_CLI_SRCS = tests/cli/test_cli.c
 TEST_SERVE_SRCS = tests/serve/test_child.c tests/serve/test_serve.c tests/serve/test_mcp.c
+TEST_EXEC_SRCS = tests/exec/test_job.c
 
 TEST_TAP_BIN = $(BUILD)/tests/test_tap
 TEST_FOUNDATION_BINS = $(TEST_FOUNDATION_SRCS:tests/%.c=$(BUILD)/tests/%)
@@ -76,6 +77,7 @@ TEST_LINT_BINS = $(TEST_LINT_SRCS:tests/%.c=$(BUILD)/tests/%)
 TEST_LSP_BINS = $(TEST_LSP_SRCS:tests/%.c=$(BUILD)/tests/%)
 TEST_CLI_BINS = $(TEST_CLI_SRCS:tests/%.c=$(BUILD)/tests/%)
 TEST_SERVE_BINS = $(TEST_SERVE_SRCS:tests/%.c=$(BUILD)/tests/%)
+TEST_EXEC_BINS = $(TEST_EXEC_SRCS:tests/%.c=$(BUILD)/tests/%)
 
 # Fuzz targets (require LLVM clang with libfuzzer; Apple clang does not include it)
 # Usage: make fuzz-build FUZZ_CC=/opt/homebrew/opt/llvm/bin/clang
@@ -92,7 +94,8 @@ FUZZ_VM_BIN = $(BUILD)/fuzz/fuzz_vm
 FUZZ_JSON_BIN = $(BUILD)/fuzz/fuzz_json
 FUZZ_SERVE_BIN = $(BUILD)/fuzz/fuzz_serve
 FUZZ_MCP_BIN = $(BUILD)/fuzz/fuzz_mcp
-FUZZ_BINS = $(FUZZ_PARSER_BIN) $(FUZZ_COMPILE_BIN) $(FUZZ_IMAGE_BIN) $(FUZZ_FORMAT_BIN) $(FUZZ_LINT_BIN) $(FUZZ_ARITH_BIN) $(FUZZ_LSP_BIN) $(FUZZ_FOUNDATION_BIN) $(FUZZ_VM_BIN) $(FUZZ_JSON_BIN) $(FUZZ_SERVE_BIN) $(FUZZ_MCP_BIN)
+FUZZ_JOB_BIN = $(BUILD)/fuzz/fuzz_job
+FUZZ_BINS = $(FUZZ_PARSER_BIN) $(FUZZ_COMPILE_BIN) $(FUZZ_IMAGE_BIN) $(FUZZ_FORMAT_BIN) $(FUZZ_LINT_BIN) $(FUZZ_ARITH_BIN) $(FUZZ_LSP_BIN) $(FUZZ_FOUNDATION_BIN) $(FUZZ_VM_BIN) $(FUZZ_JSON_BIN) $(FUZZ_SERVE_BIN) $(FUZZ_MCP_BIN) $(FUZZ_JOB_BIN)
 
 FUZZ_CFLAGS = -std=c99 -Wall -Wextra -Werror -pedantic -Iinclude -Isrc \
               -fsanitize=fuzzer,address,undefined -g -O1
@@ -102,7 +105,7 @@ FUZZ_LDFLAGS = -fsanitize=fuzzer,address,undefined
 FUZZ_LIB_OBJS = $(LIB_OBJS:$(BUILD)/%=$(BUILD)/fuzz-objs/%)
 
 .PHONY: all clean test test-tap test-foundation test-parser test-vm test-compiler \
-        test-format test-lint test-lsp test-cli test-serve format format-check fuzz-build
+        test-format test-lint test-lsp test-cli test-serve test-exec format format-check fuzz-build
 
 all: $(BINARY)
 
@@ -139,7 +142,7 @@ $(BUILD)/tests/format/%: tests/format/%.c tests/tap.h $(LIB_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJS)
 
-test: test-tap test-foundation test-parser test-vm test-compiler test-format test-lint test-lsp test-cli test-serve
+test: test-tap test-foundation test-parser test-vm test-compiler test-format test-lint test-lsp test-cli test-serve test-exec
 
 test-tap: $(TEST_TAP_BIN)
 	$(TEST_TAP_BIN)
@@ -186,6 +189,13 @@ $(BUILD)/tests/serve/%: tests/serve/%.c tests/tap.h $(BINARY)
 
 test-serve: $(TEST_SERVE_BINS)
 	@for t in $(TEST_SERVE_BINS); do echo "# Running $$t"; $$t || exit 1; done
+
+$(BUILD)/tests/exec/%: tests/exec/%.c tests/tap.h $(LIB_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJS)
+
+test-exec: $(TEST_EXEC_BINS)
+	@for t in $(TEST_EXEC_BINS); do echo "# Running $$t"; $$t || exit 1; done
 
 # Fuzz-instrumented library objects (compiled with fuzzer sanitizer flags)
 $(BUILD)/fuzz-objs/%.o: src/%.c
@@ -238,6 +248,10 @@ $(FUZZ_SERVE_BIN): fuzz/fuzz_serve.c $(FUZZ_LIB_OBJS)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS)
 
 $(FUZZ_MCP_BIN): fuzz/fuzz_mcp.c $(FUZZ_LIB_OBJS)
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS)
+
+$(FUZZ_JOB_BIN): fuzz/fuzz_job.c $(FUZZ_LIB_OBJS)
 	@mkdir -p $(dir $@)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS)
 

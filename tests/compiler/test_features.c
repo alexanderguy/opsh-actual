@@ -415,9 +415,48 @@ static void test_builtins_extra(void)
     free(out);
 }
 
+static void test_job_control(void)
+{
+    int status;
+    char *out;
+
+    /* Background command sets exit status to 0 */
+    out = run("true & wait; echo $?", &status);
+    tap_is_str(out, "0\n", "background: wait returns 0 for true &");
+    free(out);
+
+    /* $! is set after background command */
+    out = run("true & echo $!", &status);
+    tap_ok(out != NULL && strlen(out) > 1, "background: $! is a non-empty PID");
+    free(out);
+
+    /* wait with no args waits for all background jobs */
+    out = run("echo hello & wait; echo done", &status);
+    tap_is_str(out, "hello\ndone\n", "wait: waits for background job output");
+    free(out);
+
+    /* jobs builtin exists and runs without error */
+    out = run("true & wait; jobs", &status);
+    tap_is_int(status, 0, "jobs: runs without error");
+    free(out);
+
+    /* type recognizes new builtins */
+    out = run("type fg", &status);
+    tap_is_str(out, "fg is a shell builtin\n", "type: fg is a builtin");
+    free(out);
+
+    out = run("type bg", &status);
+    tap_is_str(out, "bg is a shell builtin\n", "type: bg is a builtin");
+    free(out);
+
+    out = run("type jobs", &status);
+    tap_is_str(out, "jobs is a shell builtin\n", "type: jobs is a builtin");
+    free(out);
+}
+
 int main(void)
 {
-    tap_plan(57);
+    tap_plan(64);
 
     test_heredoc();
     test_patterns();
@@ -433,6 +472,7 @@ int main(void)
     test_temp_assign();
     test_getopts();
     test_builtins_extra();
+    test_job_control();
 
     tap_done();
     return 0;

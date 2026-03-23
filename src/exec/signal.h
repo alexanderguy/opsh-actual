@@ -19,6 +19,7 @@ void signal_clear(void);
 /* Check and clear specific signals */
 bool signal_check_int(void);
 bool signal_check_term(void);
+bool signal_check_chld(void);
 
 /* Get the signal number that is pending (0 if none) */
 int signal_get_pending(void);
