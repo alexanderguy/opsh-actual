@@ -26,7 +26,7 @@ AGENT_SRCS = src/agent/event.c
 FORMAT_SRCS = src/format/format.c
 LINT_SRCS = src/lint/lint.c src/lint/checks.c
 LSP_SRCS = src/lsp/lsp.c
-SERVE_SRCS = src/serve/child.c
+SERVE_SRCS = src/serve/child.c src/serve/serve.c
 MAIN_SRCS = src/main.c
 
 ALL_SRCS = $(FOUNDATION_SRCS) $(PARSER_SRCS) $(VM_SRCS) $(EXEC_SRCS) \
@@ -64,7 +64,7 @@ TEST_FORMAT_SRCS = tests/format/test_format.c
 TEST_LINT_SRCS = tests/lint/test_lint.c
 TEST_LSP_SRCS = tests/lsp/test_lsp.c
 TEST_CLI_SRCS = tests/cli/test_cli.c
-TEST_SERVE_SRCS = tests/serve/test_child.c
+TEST_SERVE_SRCS = tests/serve/test_child.c tests/serve/test_serve.c
 
 TEST_TAP_BIN = $(BUILD)/tests/test_tap
 TEST_FOUNDATION_BINS = $(TEST_FOUNDATION_SRCS:tests/%.c=$(BUILD)/tests/%)

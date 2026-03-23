@@ -6,6 +6,7 @@
 #include "lint/lint.h"
 #include "lsp/lsp.h"
 #include "serve/child.h"
+#include "serve/serve.h"
 #include "parser/parser.h"
 #include "vm/image_io.h"
 #include "vm/vm.h"
@@ -245,9 +246,7 @@ int main(int argc, char *argv[])
             }
             break;
         } else if (strcmp(argv[i], "serve") == 0 && i == 1) {
-            /* TODO: implement serve_main() */
-            fprintf(stderr, "opsh: serve mode not yet implemented\n");
-            return 1;
+            return serve_main();
         } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             output_path = argv[++i];
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
