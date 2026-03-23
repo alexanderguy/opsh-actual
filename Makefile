@@ -60,6 +60,7 @@ TEST_VM_SRCS = tests/vm/test_vm.c tests/vm/test_variable.c
 TEST_COMPILER_SRCS = tests/compiler/test_compiler.c
 TEST_FORMAT_SRCS = tests/format/test_format.c
 TEST_LINT_SRCS = tests/lint/test_lint.c
+TEST_LSP_SRCS = tests/lsp/test_lsp.c
 
 TEST_TAP_BIN = $(BUILD)/tests/test_tap
 TEST_FOUNDATION_BINS = $(TEST_FOUNDATION_SRCS:tests/%.c=$(BUILD)/tests/%)
@@ -68,6 +69,7 @@ TEST_VM_BINS = $(TEST_VM_SRCS:tests/%.c=$(BUILD)/tests/%)
 TEST_COMPILER_BINS = $(TEST_COMPILER_SRCS:tests/%.c=$(BUILD)/tests/%)
 TEST_FORMAT_BINS = $(TEST_FORMAT_SRCS:tests/%.c=$(BUILD)/tests/%)
 TEST_LINT_BINS = $(TEST_LINT_SRCS:tests/%.c=$(BUILD)/tests/%)
+TEST_LSP_BINS = $(TEST_LSP_SRCS:tests/%.c=$(BUILD)/tests/%)
 
 # Fuzz targets (require LLVM clang with libfuzzer; Apple clang does not include it)
 # Usage: make fuzz-build FUZZ_CC=/opt/homebrew/opt/llvm/bin/clang
@@ -88,7 +90,7 @@ FUZZ_LDFLAGS = -fsanitize=fuzzer,address,undefined
 FUZZ_LIB_OBJS = $(LIB_OBJS:$(BUILD)/%=$(BUILD)/fuzz-objs/%)
 
 .PHONY: all clean test test-tap test-foundation test-parser test-vm test-compiler \
-        test-format test-lint format format-check fuzz-build
+        test-format test-lint test-lsp format format-check fuzz-build
 
 all: $(BINARY)
 
@@ -125,7 +127,7 @@ $(BUILD)/tests/format/%: tests/format/%.c tests/tap.h $(LIB_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJS)
 
-test: test-tap test-foundation test-parser test-vm test-compiler test-format test-lint
+test: test-tap test-foundation test-parser test-vm test-compiler test-format test-lint test-lsp
 
 test-tap: $(TEST_TAP_BIN)
 	$(TEST_TAP_BIN)
@@ -151,6 +153,13 @@ $(BUILD)/tests/lint/%: tests/lint/%.c tests/tap.h $(LIB_OBJS)
 
 test-lint: $(TEST_LINT_BINS)
 	@for t in $(TEST_LINT_BINS); do echo "# Running $$t"; $$t || exit 1; done
+
+$(BUILD)/tests/lsp/%: tests/lsp/%.c tests/tap.h $(BINARY)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
+
+test-lsp: $(TEST_LSP_BINS)
+	@for t in $(TEST_LSP_BINS); do echo "# Running $$t"; $$t || exit 1; done
 
 # Fuzz-instrumented library objects (compiled with fuzzer sanitizer flags)
 $(BUILD)/fuzz-objs/%.o: src/%.c
