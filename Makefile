@@ -89,7 +89,9 @@ FUZZ_ARITH_BIN = $(BUILD)/fuzz/fuzz_arith
 FUZZ_LSP_BIN = $(BUILD)/fuzz/fuzz_lsp
 FUZZ_FOUNDATION_BIN = $(BUILD)/fuzz/fuzz_foundation
 FUZZ_VM_BIN = $(BUILD)/fuzz/fuzz_vm
-FUZZ_BINS = $(FUZZ_PARSER_BIN) $(FUZZ_COMPILE_BIN) $(FUZZ_IMAGE_BIN) $(FUZZ_FORMAT_BIN) $(FUZZ_LINT_BIN) $(FUZZ_ARITH_BIN) $(FUZZ_LSP_BIN) $(FUZZ_FOUNDATION_BIN) $(FUZZ_VM_BIN)
+FUZZ_JSON_BIN = $(BUILD)/fuzz/fuzz_json
+FUZZ_SERVE_BIN = $(BUILD)/fuzz/fuzz_serve
+FUZZ_BINS = $(FUZZ_PARSER_BIN) $(FUZZ_COMPILE_BIN) $(FUZZ_IMAGE_BIN) $(FUZZ_FORMAT_BIN) $(FUZZ_LINT_BIN) $(FUZZ_ARITH_BIN) $(FUZZ_LSP_BIN) $(FUZZ_FOUNDATION_BIN) $(FUZZ_VM_BIN) $(FUZZ_JSON_BIN) $(FUZZ_SERVE_BIN)
 
 FUZZ_CFLAGS = -std=c99 -Wall -Wextra -Werror -pedantic -Iinclude -Isrc \
               -fsanitize=fuzzer,address,undefined -g -O1
@@ -223,6 +225,14 @@ $(FUZZ_FOUNDATION_BIN): fuzz/fuzz_foundation.c $(FUZZ_LIB_OBJS)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS)
 
 $(FUZZ_VM_BIN): fuzz/fuzz_vm.c $(FUZZ_LIB_OBJS)
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS)
+
+$(FUZZ_JSON_BIN): fuzz/fuzz_json.c $(FUZZ_LIB_OBJS)
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS)
+
+$(FUZZ_SERVE_BIN): fuzz/fuzz_serve.c $(FUZZ_LIB_OBJS)
 	@mkdir -p $(dir $@)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_LDFLAGS) -o $@ $< $(FUZZ_LIB_OBJS)
 
