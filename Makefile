@@ -61,7 +61,7 @@ TEST_COMPILER_SRCS = tests/compiler/test_compiler.c tests/compiler/test_features
 TEST_FORMAT_SRCS = tests/format/test_format.c
 TEST_LINT_SRCS = tests/lint/test_lint.c
 TEST_LSP_SRCS = tests/lsp/test_lsp.c
-TEST_CLI_SRCS = tests/cli/test_cli.c tests/cli/test_agent.c
+TEST_CLI_SRCS = tests/cli/test_cli.c
 
 TEST_TAP_BIN = $(BUILD)/tests/test_tap
 TEST_FOUNDATION_BINS = $(TEST_FOUNDATION_SRCS:tests/%.c=$(BUILD)/tests/%)

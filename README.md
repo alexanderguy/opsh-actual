@@ -26,7 +26,7 @@ opsh compiles `.opsh` scripts to bytecode and executes them on a stack-based vir
 - Signal handling with deferred dispatch, `trap` for INT/TERM/HUP/QUIT/USR1/USR2/PIPE/ALRM/EXIT; `kill` supports KILL and other signals
 - Module system: `lib::import` with namespaced functions
 - Functions defined in `eval` and `source` are callable by the parent
-- JSON-RPC 2.0 agent event stream (`--agent-stdio`)
+- Session management server (`opsh serve`) with JSON-RPC 2.0 protocol (planned)
 - Bytecode serialization (`.opsb` format) and standalone binary compilation
 - Formatter (`opsh format`) and linter (`opsh lint`) with shellcheck-compatible output
 - LSP server (`opsh lsp`) with diagnostics and completion
@@ -60,8 +60,8 @@ opsh format script.opsh
 # Lint scripts
 opsh lint script.opsh
 
-# Run with agent event stream (JSON-RPC 2.0 on stderr)
-opsh --agent-stdio script.opsh
+# Start session management server (JSON-RPC 2.0 on stdin/stdout)
+opsh serve
 
 # Start the LSP server
 opsh lsp
