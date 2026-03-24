@@ -2,3 +2,4 @@ build/
 tmp/
 compile_commands.json
 *.dSYM/
+fuzz/corpus/
