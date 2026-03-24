@@ -29,14 +29,19 @@ bear -- make clean all
 ## Testing
 
 ```sh
-make test              # all tests
+make test              # all tests (1124 assertions)
 make test-tap          # TAP harness self-test
 make test-foundation   # strbuf, plist, hashtable, util
 make test-parser       # lexer + parser
-make test-vm           # VM, variables, value types
-make test-compiler     # end-to-end compiler tests (the bulk)
+make test-vm           # VM, variables, value types, arithmetic
+make test-compiler     # end-to-end compiler tests
+make test-posix        # POSIX compliance tests (quoting, expansion, etc.)
+make test-exec         # job control unit tests
 make test-format       # formatter tests
 make test-lint         # linter tests
+make test-lsp          # LSP integration tests
+make test-cli          # CLI integration tests
+make test-serve        # serve/MCP integration tests
 ```
 
 Tests use a header-only TAP harness (`tests/tap.h`). Each test binary is a standalone C program that outputs TAP. The Makefile runs them and checks for failures.
