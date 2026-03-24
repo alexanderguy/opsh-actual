@@ -1527,7 +1527,13 @@ int vm_run(vm_t *vm)
             arr.type = VT_ARRAY;
             arr.data.array.elements = elements;
             arr.data.array.count = (int)count;
-            environ_assign(vm->env, name, arr);
+            /* In a temporary scope (prefix assignment), write to the temp
+             * scope only so POP_SCOPE discards it. Otherwise walk the chain. */
+            if (vm->env->is_temporary) {
+                environ_set(vm->env, name, arr);
+            } else {
+                environ_assign(vm->env, name, arr);
+            }
             break;
         }
 

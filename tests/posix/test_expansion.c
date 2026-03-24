@@ -138,8 +138,10 @@ static void test_parameter_expansion(void)
     tap_is_str(out, "hep\n", "param: ${X/%pat/rep} anchor suffix");
     free(out);
 
-    /* nested expansion — not yet supported */
-    tap_skip(1, "nested ${} in expansion word not implemented");
+    /* nested expansion */
+    out = run("echo ${MISS:-${ALSO:-deep}}", NULL);
+    tap_is_str(out, "deep\n", "param: nested default expansion");
+    free(out);
 
     /* expansion in double quotes preserves spaces */
     out = run("X=\"a  b\"; echo \"${X}\"", NULL);

@@ -31,6 +31,16 @@ static void test_simple_commands(void)
     out = run("A=1; B=2; echo $A $B", &status);
     tap_is_str(out, "1 2\n", "simple cmd: multiple assignments");
     free(out);
+
+    /* Prefix assignment: visible to command but doesn't persist */
+    out = run("FOO=bar echo ok; echo ${FOO:-unset}", &status);
+    tap_is_str(out, "ok\nunset\n", "simple cmd: prefix assign doesn't persist");
+    free(out);
+
+    /* Prefix assignment: doesn't leak VF_EXPORT */
+    out = run("FOO=bar true; export | grep FOO; echo ${FOO:-gone}", &status);
+    tap_is_str(out, "gone\n", "simple cmd: prefix assign no export leak");
+    free(out);
 }
 
 static void test_pipelines(void)
@@ -344,7 +354,7 @@ static void test_functions_return(void)
 
 int main(void)
 {
-    tap_plan(61);
+    tap_plan(63);
 
     test_simple_commands();
     test_pipelines();
