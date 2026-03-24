@@ -298,20 +298,41 @@ int vm_exec_string(vm_t *vm, const char *source, const char *label)
         }
     }
 
+    /* Track function table regions:
+     * - 0..img_func_count-1: compiled into this eval's image (new)
+     * - img_func_count..pre_run_func_count-1: inherited from parent
+     * - pre_run_func_count..sub.func_count-1: added by nested eval/source
+     *
+     * Snapshot parent-inherited entries so we can detect redefinitions. */
+    int img_func_count = img->func_count;
+    int pre_run_func_count = sub.func_count;
+    int parent_range = pre_run_func_count - img_func_count;
+    vm_func_t *parent_snapshot = NULL;
+    if (parent_range > 0) {
+        parent_snapshot = xmalloc((size_t)parent_range * sizeof(vm_func_t));
+        memcpy(parent_snapshot, &sub.func_table[img_func_count],
+               (size_t)parent_range * sizeof(vm_func_t));
+    }
+
     int status = vm_run(&sub);
 
-    /* After execution, merge new functions into the parent's table.
-     * Tag them with the sub-image pointer for image-swap dispatch. */
+    /* Merge functions back into the parent's table. We merge:
+     * - Image-native functions (0..img_func_count-1)
+     * - Parent-inherited functions that were REDEFINED during execution
+     * - Functions added by nested eval/source (>= pre_run_func_count) */
     {
         int fi;
         bool has_new_funcs = false;
         for (fi = 0; fi < sub.func_count; fi++) {
-            /* Functions inherited from the parent have a non-NULL image
-             * pointer.  Only functions compiled in this image (image==NULL)
-             * are genuinely new and need to be merged back. */
-            if (sub.func_table[fi].image != NULL)
-                continue;
-
+            /* Skip parent-inherited functions UNLESS they were redefined */
+            if (fi >= img_func_count && fi < pre_run_func_count) {
+                int si = fi - img_func_count;
+                if (sub.func_table[fi].bytecode_offset == parent_snapshot[si].bytecode_offset &&
+                    sub.func_table[fi].image == parent_snapshot[si].image) {
+                    continue; /* unchanged, skip */
+                }
+                /* Redefined by nested eval — fall through to merge */
+            }
             has_new_funcs = true;
 
             /* Check if this function already exists in the parent table */
@@ -326,7 +347,9 @@ int vm_exec_string(vm_t *vm, const char *source, const char *label)
             vm_func_t entry;
             entry.name = sub.func_table[fi].name;
             entry.bytecode_offset = sub.func_table[fi].bytecode_offset;
-            entry.image = img;
+            /* Use the function's own image if set (from nested eval),
+             * otherwise it was compiled into this eval's image. */
+            entry.image = sub.func_table[fi].image ? sub.func_table[fi].image : img;
 
             if (existing >= 0) {
                 /* Overwrite existing function (redefinition) */
@@ -367,6 +390,7 @@ int vm_exec_string(vm_t *vm, const char *source, const char *label)
             sub.eval_image_count = 0;
         }
     }
+    free(parent_snapshot);
 
     /* Propagate state back to the caller */
     vm->laststatus = sub.laststatus;

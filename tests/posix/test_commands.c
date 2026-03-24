@@ -348,13 +348,31 @@ static void test_functions_return(void)
     tap_is_str(out, "done\n", "func: recursive call");
     tap_is_int(status, 0, "func: recursive exit status 0");
     free(out);
-}
 
-/* Total: 61 assertions */
+    /* Function defined in eval is callable */
+    out = run("eval \"f2() { echo from_eval; }\"; f2", &status);
+    tap_is_str(out, "from_eval\n", "func: defined in eval");
+    free(out);
+
+    /* Function defined in nested eval is callable */
+    out = run("eval \"eval \\\"g() { echo nested; }\\\"\"; g", &status);
+    tap_is_str(out, "nested\n", "func: defined in nested eval");
+    free(out);
+
+    /* Function defined in triple-nested eval is callable */
+    out = run("eval \"eval \\\"eval \\\\\\\"h() { echo triple; }\\\\\\\"\\\"\"; h", &status);
+    tap_is_str(out, "triple\n", "func: defined in triple-nested eval");
+    free(out);
+
+    /* Function redefined via nested eval */
+    out = run("f2() { echo old; }; eval \"eval \\\"f2() { echo new; }\\\"\"; f2", &status);
+    tap_is_str(out, "new\n", "func: redefined via nested eval");
+    free(out);
+}
 
 int main(void)
 {
-    tap_plan(63);
+    tap_plan(67);
 
     test_simple_commands();
     test_pipelines();

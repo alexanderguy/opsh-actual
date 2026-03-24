@@ -32,10 +32,11 @@ opsh compiles `.opsh` scripts to bytecode and executes them on a stack-based vir
 - Bytecode serialization (`.opsb` format) and standalone binary compilation
 - Formatter (`opsh format`) and linter (`opsh lint`) with shellcheck-compatible output
 - LSP server (`opsh lsp`) with diagnostics and completion
-- Comprehensive test suite under ASan/UBSan with libfuzzer harnesses
+- 1124 tests under ASan/UBSan, 14 fuzz targets
 
 **Known limitations:**
 
+- `while`/`until` exit status is the condition's status, not the last body command's (matches bash/dash)
 - Capability system and native module API not yet implemented
 
 ## Usage
