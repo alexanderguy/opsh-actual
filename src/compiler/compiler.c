@@ -591,27 +591,14 @@ static void compile_simple(compiler_t *cc, command_t *cmd)
         }
     }
 
-    /* If there are both assignments and command words, save the current
-     * values so they can be restored after the command completes. */
-    bool temp_assigns = (assigns->length > 0 && words->length > 0);
+    /* If there are both assignments and command words, use a temporary
+     * scope so the assignments don't leak into the parent environment.
+     * This also prevents VF_EXPORT from persisting after the command. */
+    bool has_array_assigns = (cmd->u.simple.array_names.length > 0);
+    bool temp_assigns = ((assigns->length > 0 || has_array_assigns) && words->length > 0);
     if (temp_assigns) {
-        /* Push current values of each assigned variable for later restore */
-        for (i = 0; i < assigns->length; i++) {
-            word_part_t *w = plist_get(assigns, i);
-            if (w != NULL && w->type == WP_LITERAL) {
-                const char *eq = strchr(w->part.string, '=');
-                if (eq != NULL) {
-                    size_t nlen = (size_t)(eq - w->part.string);
-                    char *nm = xmalloc(nlen + 1);
-                    memcpy(nm, w->part.string, nlen);
-                    nm[nlen] = '\0';
-                    uint16_t nidx = image_add_const(cc->image, nm);
-                    free(nm);
-                    image_emit_u8(cc->image, OP_GET_VAR);
-                    image_emit_u16(cc->image, nidx);
-                }
-            }
-        }
+        image_emit_u8(cc->image, OP_PUSH_SCOPE);
+        image_emit_u8(cc->image, 1); /* is_temporary = true */
     }
 
     /* Compile assignments */
@@ -692,13 +679,16 @@ static void compile_simple(compiler_t *cc, command_t *cmd)
             if (assign_tilde) {
                 image_emit_u8(cc->image, OP_EXPAND_TILDE);
             }
-            image_emit_u8(cc->image, is_local_var(cc, cc->image->const_pool[name_idx])
-                                         ? OP_SET_LOCAL
-                                         : OP_SET_VAR);
-            image_emit_u16(cc->image, name_idx);
-            /* For prefix assignments, mark the variable for export to child */
             if (temp_assigns) {
+                /* Write to temp scope only; mark for export to child */
+                image_emit_u8(cc->image, OP_SET_LOCAL);
+                image_emit_u16(cc->image, name_idx);
                 image_emit_u8(cc->image, OP_EXPORT);
+                image_emit_u16(cc->image, name_idx);
+            } else {
+                image_emit_u8(cc->image, is_local_var(cc, cc->image->const_pool[name_idx])
+                                             ? OP_SET_LOCAL
+                                             : OP_SET_VAR);
                 image_emit_u16(cc->image, name_idx);
             }
         } else {
@@ -803,24 +793,9 @@ static void compile_simple(compiler_t *cc, command_t *cmd)
     }
 
     if (temp_assigns) {
-        /* Restore saved values in reverse order */
-        size_t ri;
-        for (ri = assigns->length; ri > 0; ri--) {
-            word_part_t *w = plist_get(assigns, ri - 1);
-            if (w != NULL && w->type == WP_LITERAL) {
-                const char *eq = strchr(w->part.string, '=');
-                if (eq != NULL) {
-                    size_t nlen = (size_t)(eq - w->part.string);
-                    char *nm = xmalloc(nlen + 1);
-                    memcpy(nm, w->part.string, nlen);
-                    nm[nlen] = '\0';
-                    uint16_t nidx = image_add_const(cc->image, nm);
-                    free(nm);
-                    image_emit_u8(cc->image, OP_SET_VAR);
-                    image_emit_u16(cc->image, nidx);
-                }
-            }
-        }
+        /* Pop the temporary scope — all prefix assignments are discarded,
+         * including any VF_EXPORT flags. Parent scope is clean. */
+        image_emit_u8(cc->image, OP_POP_SCOPE);
     }
 
     /* exec without args: redirections are permanent (don't restore) */

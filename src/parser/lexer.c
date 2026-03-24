@@ -168,11 +168,21 @@ static word_part_t *parse_param_expansion(lexer_t *lex)
         strbuf_init(&name);
 
         c = lexer_char(lex);
-        /* Special parameters inside braces */
-        if (c == '?' || c == '$' || c == '!' || c == '#' || c == '@' || c == '*' || c == '-' ||
-            (c >= '0' && c <= '9')) {
+        /* Special parameters inside braces: single-char specials and digits.
+         * Digits consume all consecutive digits for ${10}, ${11}, etc. */
+        if (c == '?' || c == '$' || c == '!' || c == '@' || c == '*' || c == '-') {
             strbuf_append_byte(&name, c);
             lexer_advance(lex);
+        } else if (c == '#' && lexer_peek_char(lex, 1) == '}') {
+            /* $# (param count) — only when immediately followed by } */
+            strbuf_append_byte(&name, c);
+            lexer_advance(lex);
+        } else if (c >= '0' && c <= '9') {
+            /* Positional params: ${0}, ${1}, ..., ${10}, ${123} */
+            while (lex->pos < lex->length && lexer_char(lex) >= '0' && lexer_char(lex) <= '9') {
+                strbuf_append_byte(&name, lexer_char(lex));
+                lexer_advance(lex);
+            }
         } else {
             while (lex->pos < lex->length) {
                 c = lexer_char(lex);
@@ -304,7 +314,9 @@ static word_part_t *parse_param_expansion(lexer_t *lex)
         return wu;
     }
 
-    /* Parse the word argument (up to } or / for substitution) */
+    /* Parse the word argument (up to } or / for substitution).
+     * Collect raw text tracking brace depth, then re-parse through a
+     * sub-lexer so nested ${...} and $(...) are handled recursively. */
     {
         strbuf_t word;
         int depth = 1;
@@ -317,14 +329,92 @@ static word_part_t *parse_param_expansion(lexer_t *lex)
                 if (depth == 0) {
                     break;
                 }
-            } else if (c == '{') {
+            } else if (c == '$' && lex->pos + 1 < lex->length && lexer_peek_char(lex, 1) == '{') {
                 depth++;
-            } else if (c == '/' && pe->type == PE_REPLACE && pe->pattern == NULL) {
-                /* Switch from pattern to replacement */
-                word_part_t *mw = lexer_alloc(lex, sizeof(*mw));
-                mw->type = WP_LITERAL;
-                mw->part.string = strbuf_detach(&word);
-                pe->pattern = mw;
+            } else if (c == '$' && lex->pos + 1 < lex->length && lexer_peek_char(lex, 1) == '(') {
+                /* Skip over $(...) command substitution — track parens */
+                strbuf_append_byte(&word, c);
+                lexer_advance(lex);
+                strbuf_append_byte(&word, lexer_char(lex));
+                lexer_advance(lex);
+                int pdepth = 1;
+                while (lex->pos < lex->length && pdepth > 0) {
+                    char pc = lexer_char(lex);
+                    if (pc == '(') {
+                        pdepth++;
+                    } else if (pc == ')') {
+                        pdepth--;
+                        if (pdepth == 0) {
+                            strbuf_append_byte(&word, pc);
+                            lexer_advance(lex);
+                            break;
+                        }
+                    } else if (pc == '\'' || pc == '"') {
+                        /* Skip quoted strings inside $(...) */
+                        char q = pc;
+                        strbuf_append_byte(&word, pc);
+                        lexer_advance(lex);
+                        while (lex->pos < lex->length && lexer_char(lex) != q) {
+                            if (q == '"' && lexer_char(lex) == '\\' && lex->pos + 1 < lex->length) {
+                                strbuf_append_byte(&word, lexer_char(lex));
+                                lexer_advance(lex);
+                            }
+                            strbuf_append_byte(&word, lexer_char(lex));
+                            lexer_advance(lex);
+                        }
+                        if (lex->pos < lex->length) {
+                            strbuf_append_byte(&word, lexer_char(lex));
+                            lexer_advance(lex);
+                        }
+                        continue;
+                    }
+                    strbuf_append_byte(&word, pc);
+                    lexer_advance(lex);
+                }
+                continue;
+            } else if (c == '\'') {
+                /* Skip single-quoted string — } inside is literal */
+                strbuf_append_byte(&word, c);
+                lexer_advance(lex);
+                while (lex->pos < lex->length && lexer_char(lex) != '\'') {
+                    strbuf_append_byte(&word, lexer_char(lex));
+                    lexer_advance(lex);
+                }
+                if (lex->pos < lex->length) {
+                    strbuf_append_byte(&word, lexer_char(lex));
+                    lexer_advance(lex);
+                }
+                continue;
+            } else if (c == '"') {
+                /* Skip double-quoted string — } inside is literal */
+                strbuf_append_byte(&word, c);
+                lexer_advance(lex);
+                while (lex->pos < lex->length && lexer_char(lex) != '"') {
+                    if (lexer_char(lex) == '\\' && lex->pos + 1 < lex->length) {
+                        strbuf_append_byte(&word, lexer_char(lex));
+                        lexer_advance(lex);
+                    }
+                    strbuf_append_byte(&word, lexer_char(lex));
+                    lexer_advance(lex);
+                }
+                if (lex->pos < lex->length) {
+                    strbuf_append_byte(&word, lexer_char(lex));
+                    lexer_advance(lex);
+                }
+                continue;
+            } else if (c == '/' && pe->type == PE_REPLACE && pe->pattern == NULL && depth == 1) {
+                /* Switch from pattern to replacement at top level */
+                if (word.length > 0) {
+                    char *raw = strbuf_detach(&word);
+                    lexer_t sub;
+                    lexer_init(&sub, raw, lex->filename);
+                    sub.arena = lex->arena;
+                    pe->pattern = parse_word_units(&sub, false, false, NULL);
+                    lexer_destroy(&sub);
+                    free(raw);
+                } else {
+                    strbuf_destroy(&word);
+                }
                 strbuf_init(&word);
                 lexer_advance(lex);
                 continue;
@@ -334,9 +424,14 @@ static word_part_t *parse_param_expansion(lexer_t *lex)
         }
 
         if (word.length > 0) {
-            word_part_t *ww = lexer_alloc(lex, sizeof(*ww));
-            ww->type = WP_LITERAL;
-            ww->part.string = strbuf_detach(&word);
+            /* Re-parse through sub-lexer for nested expansions */
+            char *raw = strbuf_detach(&word);
+            lexer_t sub;
+            lexer_init(&sub, raw, lex->filename);
+            sub.arena = lex->arena;
+            word_part_t *ww = parse_word_units(&sub, false, false, NULL);
+            lexer_destroy(&sub);
+            free(raw);
             if (pe->type == PE_REPLACE && pe->pattern != NULL) {
                 pe->replacement = ww;
             } else if (pe->type == PE_REPLACE) {

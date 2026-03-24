@@ -13,8 +13,14 @@ static void test_positional_params(void)
     free(out);
 
     out = run("f() { echo $9; }; f a b c d e f g h i", &status);
-    tap_is_str(out, "i\n", "positional: $9 single-digit max");
+    tap_is_str(out, "i\n", "positional: $9 single-digit");
     tap_is_int(status, 0, "positional: $9 status");
+    free(out);
+
+    /* ${10} multi-digit positional parameter */
+    out = run("f() { echo ${10}; }; f a b c d e f g h i j", &status);
+    tap_is_str(out, "j\n", "positional: ${10} multi-digit");
+    tap_is_int(status, 0, "positional: ${10} status");
     free(out);
 
     out = run("set -- x y z; echo $1 $2 $3", &status);
@@ -148,7 +154,7 @@ static void test_param_interactions(void)
 
 int main(void)
 {
-    tap_plan(49);
+    tap_plan(51);
 
     test_positional_params();
     test_special_params();
