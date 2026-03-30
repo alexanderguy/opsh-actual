@@ -435,9 +435,172 @@ static void test_signal_invalid(void)
     serve_shutdown(&s);
 }
 
+/* ---- Streaming helpers ---- */
+
+#define MAX_RECV_MSGS 64
+
+typedef struct {
+    char *msgs[MAX_RECV_MSGS];
+    int count;
+    int result_idx; /* index of the final result message */
+} recv_all_t;
+
+/* Collect messages until we get one that is a result (no "method" key =
+ * not a notification). Notifications have "method", results have "id". */
+static recv_all_t serve_recv_all(serve_proc_t *s)
+{
+    recv_all_t ra;
+    memset(&ra, 0, sizeof(ra));
+    ra.result_idx = -1;
+
+    for (int i = 0; i < MAX_RECV_MSGS; i++) {
+        char *msg = serve_recv(s);
+        if (msg == NULL) {
+            break;
+        }
+        ra.msgs[ra.count] = msg;
+        ra.count++;
+        if (strstr(msg, "\"method\"") == NULL) {
+            ra.result_idx = ra.count - 1;
+            break;
+        }
+    }
+    return ra;
+}
+
+static void recv_all_free(recv_all_t *ra)
+{
+    for (int i = 0; i < ra->count; i++) {
+        free(ra->msgs[i]);
+        ra->msgs[i] = NULL;
+    }
+    ra->count = 0;
+    ra->result_idx = -1;
+}
+
+/* ---- Streaming tests ---- */
+
+static void test_eval_stream_basic(void)
+{
+    serve_proc_t s = serve_start();
+    int sid = serve_create_session(&s, 1);
+
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+             "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/eval\","
+             "\"params\":{\"session_id\":%d,\"source\":\"echo hello\",\"stream\":true}}",
+             sid);
+    serve_send(&s, buf);
+    recv_all_t ra = serve_recv_all(&s);
+
+    tap_ok(ra.count >= 2, "stream basic: got notifications + result");
+    tap_ok(ra.result_idx >= 0, "stream basic: got final result");
+
+    /* Check that at least one notification has stdout data */
+    int found_stdout = 0;
+    for (int i = 0; i < ra.count; i++) {
+        if (i == ra.result_idx)
+            continue;
+        if (strstr(ra.msgs[i], "\"session/output\"") != NULL &&
+            strstr(ra.msgs[i], "\"stdout\"") != NULL && strstr(ra.msgs[i], "hello") != NULL) {
+            found_stdout = 1;
+        }
+    }
+    tap_ok(found_stdout, "stream basic: notification has stdout hello");
+
+    /* Final result still has complete output */
+    if (ra.result_idx >= 0) {
+        tap_ok(strstr(ra.msgs[ra.result_idx], "hello") != NULL,
+               "stream basic: result has complete output");
+        tap_ok(strstr(ra.msgs[ra.result_idx], "\"exit_status\":0") != NULL,
+               "stream basic: exit status 0");
+    } else {
+        tap_ok(0, "stream basic: result has complete output");
+        tap_ok(0, "stream basic: exit status 0");
+    }
+
+    recv_all_free(&ra);
+    serve_shutdown(&s);
+}
+
+static void test_eval_stream_disabled(void)
+{
+    serve_proc_t s = serve_start();
+    int sid = serve_create_session(&s, 1);
+
+    char *resp = serve_eval(&s, 2, sid, "echo nostream");
+    tap_ok(resp != NULL, "stream disabled: got response");
+    tap_ok(resp != NULL && strstr(resp, "nostream") != NULL, "stream disabled: has output");
+    tap_ok(resp != NULL && strstr(resp, "\"session/output\"") == NULL,
+           "stream disabled: no notification in result");
+    free(resp);
+
+    serve_shutdown(&s);
+}
+
+static void test_eval_stream_stderr(void)
+{
+    serve_proc_t s = serve_start();
+    int sid = serve_create_session(&s, 1);
+
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+             "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/eval\","
+             "\"params\":{\"session_id\":%d,\"source\":\"echo err >&2\",\"stream\":true}}",
+             sid);
+    serve_send(&s, buf);
+    recv_all_t ra = serve_recv_all(&s);
+
+    int found_stderr = 0;
+    for (int i = 0; i < ra.count; i++) {
+        if (i == ra.result_idx)
+            continue;
+        if (strstr(ra.msgs[i], "\"session/output\"") != NULL &&
+            strstr(ra.msgs[i], "\"stderr\"") != NULL && strstr(ra.msgs[i], "err\\n") != NULL) {
+            found_stderr = 1;
+        }
+    }
+    tap_ok(found_stderr, "stream stderr: notification has stderr data");
+
+    recv_all_free(&ra);
+    serve_shutdown(&s);
+}
+
+static void test_eval_stream_both(void)
+{
+    serve_proc_t s = serve_start();
+    int sid = serve_create_session(&s, 1);
+
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+             "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/eval\","
+             "\"params\":{\"session_id\":%d,\"source\":"
+             "\"echo out1; echo err1 >&2\",\"stream\":true}}",
+             sid);
+    serve_send(&s, buf);
+    recv_all_t ra = serve_recv_all(&s);
+
+    int found_stdout = 0, found_stderr = 0;
+    for (int i = 0; i < ra.count; i++) {
+        if (i == ra.result_idx)
+            continue;
+        if (strstr(ra.msgs[i], "\"stdout\"") != NULL && strstr(ra.msgs[i], "out1") != NULL) {
+            found_stdout = 1;
+        }
+        if (strstr(ra.msgs[i], "\"stderr\"") != NULL && strstr(ra.msgs[i], "err1") != NULL) {
+            found_stderr = 1;
+        }
+    }
+    tap_ok(found_stdout, "stream both: has stdout notification");
+    tap_ok(found_stderr, "stream both: has stderr notification");
+
+    recv_all_free(&ra);
+    serve_shutdown(&s);
+}
+
 int main(void)
 {
-    tap_plan(38);
+    tap_plan(49);
 
     test_initialize();
     test_unknown_method();
@@ -455,6 +618,10 @@ int main(void)
     test_eval_missing_source();
     test_signal_nonexistent();
     test_signal_invalid();
+    test_eval_stream_basic();
+    test_eval_stream_disabled();
+    test_eval_stream_stderr();
+    test_eval_stream_both();
 
     tap_done();
     return 0;
