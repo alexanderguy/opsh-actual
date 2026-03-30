@@ -168,6 +168,26 @@ static int64_t get_session_id_param(const char *msg)
     return get_nested_int(msg, "session_id");
 }
 
+/* Same string-search approach as get_nested_int. Fragile against keys
+ * appearing inside string values, but consistent with the existing parsers. */
+static int get_nested_bool(const char *msg, const char *key)
+{
+    char search[128];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *p = strstr(msg, search);
+    if (p == NULL) {
+        return 0;
+    }
+    p += strlen(search);
+    while (*p == ' ' || *p == '\t' || *p == ':') {
+        p++;
+    }
+    if (strncmp(p, "true", 4) == 0) {
+        return 1;
+    }
+    return 0;
+}
+
 /* ---- session_op_* implementations ---- */
 
 void session_eval_result_destroy(session_eval_result_t *r)
@@ -299,8 +319,17 @@ int session_op_create(const char *cwd, session_create_result_t *out, char **erro
     return 0;
 }
 
-int session_op_eval(int session_id, const char *source, int timeout_ms, session_eval_result_t *out,
-                    char **error)
+/* Emit a stream notification if the buffer grew and hasn't been truncated. */
+static void maybe_stream(session_stream_cb cb, void *ctx, const char *name, strbuf_t *buf,
+                         size_t old_len)
+{
+    if (cb && buf->length > old_len && old_len < MAX_OUTPUT_SIZE) {
+        cb(name, buf->contents + old_len, ctx);
+    }
+}
+
+int session_op_eval(int session_id, const char *source, int timeout_ms, session_stream_cb stream_cb,
+                    void *stream_ctx, session_eval_result_t *out, char **error)
 {
     session_t *s = find_session(session_id);
     if (s == NULL) {
@@ -361,10 +390,14 @@ int session_op_eval(int session_id, const char *source, int timeout_ms, session_
         }
 
         if (pfds[0].revents & POLLIN) {
+            size_t before = out_buf.length;
             drain_fd(s->out_fd, &out_buf);
+            maybe_stream(stream_cb, stream_ctx, "stdout", &out_buf, before);
         }
         if (pfds[1].revents & POLLIN) {
+            size_t before = err_buf.length;
             drain_fd(s->err_fd, &err_buf);
+            maybe_stream(stream_cb, stream_ctx, "stderr", &err_buf, before);
         }
         if (pfds[2].revents & (POLLIN | POLLHUP)) {
             uint8_t status_byte;
@@ -374,8 +407,12 @@ int session_op_eval(int session_id, const char *source, int timeout_ms, session_
             } else {
                 child_dead = true;
             }
+            size_t out_before = out_buf.length;
+            size_t err_before = err_buf.length;
             drain_fd(s->out_fd, &out_buf);
             drain_fd(s->err_fd, &err_buf);
+            maybe_stream(stream_cb, stream_ctx, "stdout", &out_buf, out_before);
+            maybe_stream(stream_cb, stream_ctx, "stderr", &err_buf, err_before);
             break;
         }
     }
@@ -527,16 +564,46 @@ static void handle_session_create(int64_t id, const char *msg)
     strbuf_destroy(&buf);
 }
 
+typedef struct {
+    int session_id;
+    FILE *out;
+} stream_ctx_t;
+
+static void stream_callback(const char *stream_name, const char *data, void *ctx)
+{
+    stream_ctx_t *sc = (stream_ctx_t *)ctx;
+
+    strbuf_t params;
+    strbuf_init(&params);
+    json_begin_object(&params);
+    json_key_int(&params, "session_id", sc->session_id);
+    json_key_string(&params, "stream", stream_name);
+    json_key_string(&params, "data", data);
+    json_end_object(&params);
+    jsonrpc_send_notification(sc->out, "session/output", params.contents);
+    strbuf_destroy(&params);
+}
+
 static void handle_session_eval(int64_t id, const char *msg)
 {
     int64_t sid = get_session_id_param(msg);
     char *source = json_find_nested_string(msg, "source");
     int64_t timeout = get_nested_int(msg, "timeout_ms");
+    int stream = get_nested_bool(msg, "stream");
+
+    session_stream_cb cb = NULL;
+    stream_ctx_t sc;
+    if (stream) {
+        sc.session_id = (int)sid;
+        sc.out = stdout;
+        cb = stream_callback;
+    }
 
     session_eval_result_t result;
     char *error = NULL;
 
-    int rc = session_op_eval((int)sid, source, (int)timeout, &result, &error);
+    int rc =
+        session_op_eval((int)sid, source, (int)timeout, cb, stream ? &sc : NULL, &result, &error);
     if (rc != 0) {
         free(source);
         jsonrpc_send_error(stdout, id, session_err_to_jsonrpc(rc), error);

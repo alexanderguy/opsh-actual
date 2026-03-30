@@ -279,7 +279,7 @@ static void handle_tool_session_eval(int64_t id, const char *msg)
     session_eval_result_t result;
     char *error = NULL;
 
-    int rc = session_op_eval((int)sid, source, (int)timeout_raw, &result, &error);
+    int rc = session_op_eval((int)sid, source, (int)timeout_raw, NULL, NULL, &result, &error);
     free(source);
     if (rc != 0) {
         mcp_send_tool_result(id, error, 1);
