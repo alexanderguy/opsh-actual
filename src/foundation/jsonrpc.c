@@ -82,3 +82,17 @@ void jsonrpc_send_error(FILE *out, int64_t id, int code, const char *message)
     jsonrpc_send(out, buf.contents);
     strbuf_destroy(&buf);
 }
+
+void jsonrpc_send_notification(FILE *out, const char *method, const char *params_json)
+{
+    strbuf_t buf;
+    strbuf_init(&buf);
+    json_begin_object(&buf);
+    json_key_string(&buf, "jsonrpc", "2.0");
+    json_key_string(&buf, "method", method);
+    strbuf_append_str(&buf, ",\"params\":");
+    strbuf_append_str(&buf, params_json);
+    json_end_object(&buf);
+    jsonrpc_send(out, buf.contents);
+    strbuf_destroy(&buf);
+}

@@ -17,4 +17,7 @@ void jsonrpc_send_result(FILE *out, int64_t id, const char *result_json);
 /* Build and send a JSON-RPC 2.0 error response. */
 void jsonrpc_send_error(FILE *out, int64_t id, int code, const char *message);
 
+/* Build and send a JSON-RPC 2.0 notification (no id field). */
+void jsonrpc_send_notification(FILE *out, const char *method, const char *params_json);
+
 #endif /* OPSH_FOUNDATION_JSONRPC_H */
