@@ -508,14 +508,14 @@ static void test_eval_stream_basic(void)
     }
     tap_ok(found_stdout, "stream basic: notification has stdout hello");
 
-    /* Final result still has complete output */
+    /* Final result omits stdout/stderr when streaming */
     if (ra.result_idx >= 0) {
-        tap_ok(strstr(ra.msgs[ra.result_idx], "hello") != NULL,
-               "stream basic: result has complete output");
+        tap_ok(strstr(ra.msgs[ra.result_idx], "\"stdout\"") == NULL,
+               "stream basic: result omits stdout");
         tap_ok(strstr(ra.msgs[ra.result_idx], "\"exit_status\":0") != NULL,
                "stream basic: exit status 0");
     } else {
-        tap_ok(0, "stream basic: result has complete output");
+        tap_ok(0, "stream basic: result omits stdout");
         tap_ok(0, "stream basic: exit status 0");
     }
 

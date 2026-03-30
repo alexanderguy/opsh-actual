@@ -319,13 +319,25 @@ int session_op_create(const char *cwd, session_create_result_t *out, char **erro
     return 0;
 }
 
-/* Emit a stream notification if the buffer grew and hasn't been truncated. */
-static void maybe_stream(session_stream_cb cb, void *ctx, const char *name, strbuf_t *buf,
-                         size_t old_len)
+/* Drain a fd, stream via callback, and discard. Returns bytes read. */
+static size_t drain_and_stream(int fd, session_stream_cb cb, void *ctx, const char *name,
+                               size_t total_so_far)
 {
-    if (cb && buf->length > old_len && old_len < MAX_OUTPUT_SIZE) {
-        cb(name, buf->contents + old_len, ctx);
+    char tmp[4097];
+    size_t total = 0;
+    for (;;) {
+        ssize_t n = read(fd, tmp, sizeof(tmp) - 1);
+        if (n <= 0) {
+            break;
+        }
+        total += (size_t)n;
+        /* Stream if under the cap; keep draining to prevent pipe stall */
+        if (cb && total_so_far + total <= MAX_OUTPUT_SIZE) {
+            tmp[n] = '\0';
+            cb(name, tmp, ctx);
+        }
     }
+    return total;
 }
 
 int session_op_eval(int session_id, const char *source, int timeout_ms, session_stream_cb stream_cb,
@@ -357,8 +369,13 @@ int session_op_eval(int session_id, const char *source, int timeout_ms, session_
     }
 
     strbuf_t out_buf, err_buf;
-    strbuf_init(&out_buf);
-    strbuf_init(&err_buf);
+    size_t out_total = 0, err_total = 0;
+    int streaming = (stream_cb != NULL);
+
+    if (!streaming) {
+        strbuf_init(&out_buf);
+        strbuf_init(&err_buf);
+    }
 
     int exit_status = -1;
     bool child_dead = false;
@@ -390,14 +407,20 @@ int session_op_eval(int session_id, const char *source, int timeout_ms, session_
         }
 
         if (pfds[0].revents & POLLIN) {
-            size_t before = out_buf.length;
-            drain_fd(s->out_fd, &out_buf);
-            maybe_stream(stream_cb, stream_ctx, "stdout", &out_buf, before);
+            if (streaming) {
+                out_total +=
+                    drain_and_stream(s->out_fd, stream_cb, stream_ctx, "stdout", out_total);
+            } else {
+                drain_fd(s->out_fd, &out_buf);
+            }
         }
         if (pfds[1].revents & POLLIN) {
-            size_t before = err_buf.length;
-            drain_fd(s->err_fd, &err_buf);
-            maybe_stream(stream_cb, stream_ctx, "stderr", &err_buf, before);
+            if (streaming) {
+                err_total +=
+                    drain_and_stream(s->err_fd, stream_cb, stream_ctx, "stderr", err_total);
+            } else {
+                drain_fd(s->err_fd, &err_buf);
+            }
         }
         if (pfds[2].revents & (POLLIN | POLLHUP)) {
             uint8_t status_byte;
@@ -407,40 +430,51 @@ int session_op_eval(int session_id, const char *source, int timeout_ms, session_
             } else {
                 child_dead = true;
             }
-            size_t out_before = out_buf.length;
-            size_t err_before = err_buf.length;
-            drain_fd(s->out_fd, &out_buf);
-            drain_fd(s->err_fd, &err_buf);
-            maybe_stream(stream_cb, stream_ctx, "stdout", &out_buf, out_before);
-            maybe_stream(stream_cb, stream_ctx, "stderr", &err_buf, err_before);
+            if (streaming) {
+                out_total +=
+                    drain_and_stream(s->out_fd, stream_cb, stream_ctx, "stdout", out_total);
+                err_total +=
+                    drain_and_stream(s->err_fd, stream_cb, stream_ctx, "stderr", err_total);
+            } else {
+                drain_fd(s->out_fd, &out_buf);
+                drain_fd(s->err_fd, &err_buf);
+            }
             break;
         }
     }
 
     if (child_dead) {
         session_close(s);
-        strbuf_destroy(&out_buf);
-        strbuf_destroy(&err_buf);
+        if (!streaming) {
+            strbuf_destroy(&out_buf);
+            strbuf_destroy(&err_buf);
+        }
         *error = xstrdup("Session process died");
         return SESSION_ERR;
     }
 
     if (exit_status < 0) {
         session_close(s);
-        strbuf_destroy(&out_buf);
-        strbuf_destroy(&err_buf);
+        if (!streaming) {
+            strbuf_destroy(&out_buf);
+            strbuf_destroy(&err_buf);
+        }
         *error = xstrdup("Command timed out");
         return SESSION_ERR;
     }
 
     *error = NULL;
     out->exit_status = exit_status;
-    out->truncated = (out_buf.length >= MAX_OUTPUT_SIZE || err_buf.length >= MAX_OUTPUT_SIZE);
-    out->out_buf = strbuf_detach(&out_buf);
-    out->err_buf = strbuf_detach(&err_buf);
 
-    strbuf_destroy(&out_buf);
-    strbuf_destroy(&err_buf);
+    if (streaming) {
+        out->truncated = (out_total >= MAX_OUTPUT_SIZE || err_total >= MAX_OUTPUT_SIZE);
+        out->out_buf = NULL;
+        out->err_buf = NULL;
+    } else {
+        out->truncated = (out_buf.length >= MAX_OUTPUT_SIZE || err_buf.length >= MAX_OUTPUT_SIZE);
+        out->out_buf = strbuf_detach(&out_buf);
+        out->err_buf = strbuf_detach(&err_buf);
+    }
     return 0;
 }
 
@@ -616,8 +650,10 @@ static void handle_session_eval(int64_t id, const char *msg)
     strbuf_init(&buf);
     json_begin_object(&buf);
     json_key_int(&buf, "exit_status", result.exit_status);
-    json_key_string(&buf, "stdout", result.out_buf);
-    json_key_string(&buf, "stderr", result.err_buf);
+    if (!stream) {
+        json_key_string(&buf, "stdout", result.out_buf);
+        json_key_string(&buf, "stderr", result.err_buf);
+    }
     if (result.truncated) {
         json_key_bool(&buf, "truncated", 1);
     }
