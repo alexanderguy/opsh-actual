@@ -195,6 +195,10 @@ int main(int argc, char *argv[])
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "lsp") == 0 && i == 1) {
+            if (argc > 2) {
+                fprintf(stderr, "opsh lsp: unexpected argument: %s\n", argv[2]);
+                return 1;
+            }
             return lsp_main();
         } else if (strcmp(argv[i], "format") == 0 && i == 1) {
             return format_main(argc - 2, argv + 2);
@@ -202,7 +206,12 @@ int main(int argc, char *argv[])
             return lint_main(argc - 2, argv + 2);
         } else if (strcmp(argv[i], "build") == 0 && i == 1) {
             do_build = 1;
-        } else if (strcmp(argv[i], "-c") == 0 && i + 1 < argc) {
+        } else if (strcmp(argv[i], "-c") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "opsh: option -c requires an argument\n");
+                usage(argv[0]);
+                return 1;
+            }
             c_string = argv[++i];
             /* Per POSIX: remaining args are command_name ($0) then $1+ */
             if (i + 1 < argc) {
@@ -219,10 +228,23 @@ int main(int argc, char *argv[])
             }
             break;
         } else if (strcmp(argv[i], "serve") == 0 && i == 1) {
+            if (argc > 2) {
+                fprintf(stderr, "opsh serve: unexpected argument: %s\n", argv[2]);
+                return 1;
+            }
             return serve_main();
         } else if (strcmp(argv[i], "mcp") == 0 && i == 1) {
+            if (argc > 2) {
+                fprintf(stderr, "opsh mcp: unexpected argument: %s\n", argv[2]);
+                return 1;
+            }
             return mcp_main();
-        } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
+        } else if (strcmp(argv[i], "-o") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "opsh: option -o requires an argument\n");
+                usage(argv[0]);
+                return 1;
+            }
             output_path = argv[++i];
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage(argv[0]);
@@ -239,6 +261,12 @@ int main(int argc, char *argv[])
                 break;
             }
         }
+    }
+
+    if (output_path != NULL && !do_build) {
+        fprintf(stderr, "opsh: -o is only valid with the build command\n");
+        usage(argv[0]);
+        return 1;
     }
 
     /* Compute script positional arguments once */

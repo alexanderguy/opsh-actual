@@ -196,9 +196,77 @@ static void test_lint_subcommand(void)
     unlink("tmp/test_lint.opsh");
 }
 
+static void test_unknown_option(void)
+{
+    const char *args[] = {"--bogus"};
+    run_result_t r = run_opsh(args, 1);
+    tap_is_int(r.status, 1, "unknown option: exit 1");
+    tap_ok(strstr(r.err, "unknown option") != NULL, "unknown option: error message");
+    free_result(&r);
+}
+
+static void test_c_missing_arg(void)
+{
+    const char *args[] = {"-c"};
+    run_result_t r = run_opsh(args, 1);
+    tap_is_int(r.status, 1, "-c no arg: exit 1");
+    tap_ok(strstr(r.err, "-c requires") != NULL, "-c no arg: error message");
+    free_result(&r);
+}
+
+static void test_o_missing_arg(void)
+{
+    const char *args[] = {"-o"};
+    run_result_t r = run_opsh(args, 1);
+    tap_is_int(r.status, 1, "-o no arg: exit 1");
+    tap_ok(strstr(r.err, "-o requires") != NULL, "-o no arg: error message");
+    free_result(&r);
+}
+
+static void test_serve_unexpected_arg(void)
+{
+    const char *args[] = {"serve", "--bogus"};
+    run_result_t r = run_opsh(args, 2);
+    tap_is_int(r.status, 1, "serve bogus: exit 1");
+    tap_ok(strstr(r.err, "unexpected argument") != NULL, "serve bogus: error message");
+    free_result(&r);
+}
+
+static void test_mcp_unexpected_arg(void)
+{
+    const char *args[] = {"mcp", "--bogus"};
+    run_result_t r = run_opsh(args, 2);
+    tap_is_int(r.status, 1, "mcp bogus: exit 1");
+    tap_ok(strstr(r.err, "unexpected argument") != NULL, "mcp bogus: error message");
+    free_result(&r);
+}
+
+static void test_lsp_unexpected_arg(void)
+{
+    const char *args[] = {"lsp", "--bogus"};
+    run_result_t r = run_opsh(args, 2);
+    tap_is_int(r.status, 1, "lsp bogus: exit 1");
+    tap_ok(strstr(r.err, "unexpected argument") != NULL, "lsp bogus: error message");
+    free_result(&r);
+}
+
+static void test_o_without_build(void)
+{
+    FILE *f = fopen("tmp/test_o.opsh", "w");
+    fprintf(f, "echo hello\n");
+    fclose(f);
+
+    const char *args[] = {"-o", "tmp/test_o_out", "tmp/test_o.opsh"};
+    run_result_t r = run_opsh(args, 3);
+    tap_is_int(r.status, 1, "-o without build: exit 1");
+    tap_ok(strstr(r.err, "-o is only valid") != NULL, "-o without build: error message");
+    free_result(&r);
+    unlink("tmp/test_o.opsh");
+}
+
 int main(void)
 {
-    tap_plan(16);
+    tap_plan(30);
 
     test_c_flag();
     test_c_with_args();
@@ -211,6 +279,13 @@ int main(void)
     test_help();
     test_format_subcommand();
     test_lint_subcommand();
+    test_unknown_option();
+    test_c_missing_arg();
+    test_o_missing_arg();
+    test_serve_unexpected_arg();
+    test_mcp_unexpected_arg();
+    test_lsp_unexpected_arg();
+    test_o_without_build();
 
     tap_done();
     return 0;
