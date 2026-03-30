@@ -124,6 +124,8 @@ static void test_initialize(void)
     tap_ok(resp != NULL && strstr(resp, "\"capabilities\"") != NULL,
            "initialize: has capabilities");
     tap_ok(resp != NULL && strstr(resp, "\"tools\"") != NULL, "initialize: has tools capability");
+    tap_ok(resp != NULL && strstr(resp, "claude/channel") != NULL,
+           "initialize: has channel capability");
     tap_ok(resp != NULL && strstr(resp, "\"serverInfo\"") != NULL, "initialize: has serverInfo");
     tap_ok(resp != NULL && strstr(resp, "\"opsh\"") != NULL, "initialize: server name is opsh");
     free(resp);
@@ -319,9 +321,162 @@ static void test_unknown_method(void)
     mcp_stop(&m);
 }
 
+/* ---- Streaming helpers ---- */
+
+#define MAX_RECV_MSGS 64
+
+typedef struct {
+    char *msgs[MAX_RECV_MSGS];
+    int count;
+    int result_idx;
+} mcp_recv_all_t;
+
+static mcp_recv_all_t mcp_recv_all(mcp_proc_t *m)
+{
+    mcp_recv_all_t ra;
+    memset(&ra, 0, sizeof(ra));
+    ra.result_idx = -1;
+
+    for (int i = 0; i < MAX_RECV_MSGS; i++) {
+        char *msg = mcp_recv(m);
+        if (msg == NULL) {
+            break;
+        }
+        ra.msgs[ra.count] = msg;
+        ra.count++;
+        if (strstr(msg, "\"method\"") == NULL) {
+            ra.result_idx = ra.count - 1;
+            break;
+        }
+    }
+    return ra;
+}
+
+static void mcp_recv_all_free(mcp_recv_all_t *ra)
+{
+    for (int i = 0; i < ra->count; i++) {
+        free(ra->msgs[i]);
+        ra->msgs[i] = NULL;
+    }
+    ra->count = 0;
+    ra->result_idx = -1;
+}
+
+/* ---- Streaming tests ---- */
+
+static void test_eval_stream_basic(void)
+{
+    mcp_proc_t m = mcp_start();
+    mcp_handshake(&m);
+
+    /* Create session */
+    mcp_send(&m, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
+                 "\"params\":{\"name\":\"opsh_session_create\",\"arguments\":{}}}");
+    char *resp = mcp_recv(&m);
+    free(resp);
+
+    /* Eval with streaming */
+    mcp_send(&m, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
+                 "\"params\":{\"name\":\"opsh_session_eval\","
+                 "\"arguments\":{\"session_id\":1,\"source\":\"echo hello\","
+                 "\"stream\":true}}}");
+    mcp_recv_all_t ra = mcp_recv_all(&m);
+
+    tap_ok(ra.count >= 2, "mcp stream: got notifications + result");
+    tap_ok(ra.result_idx >= 0, "mcp stream: got final result");
+
+    int found_channel = 0;
+    int has_content = 0;
+    int has_meta_stream = 0;
+    int has_meta_sid = 0;
+    for (int i = 0; i < ra.count; i++) {
+        if (i == ra.result_idx)
+            continue;
+        if (strstr(ra.msgs[i], "notifications/claude/channel") != NULL) {
+            found_channel = 1;
+            if (strstr(ra.msgs[i], "\"content\":") != NULL && strstr(ra.msgs[i], "hello") != NULL)
+                has_content = 1;
+            if (strstr(ra.msgs[i], "\"meta\"") != NULL &&
+                strstr(ra.msgs[i], "\"stream\":\"stdout\"") != NULL)
+                has_meta_stream = 1;
+            if (strstr(ra.msgs[i], "\"session_id\":\"1\"") != NULL)
+                has_meta_sid = 1;
+        }
+    }
+    tap_ok(found_channel, "mcp stream: uses notifications/claude/channel");
+    tap_ok(has_content, "mcp stream: content field has output");
+    tap_ok(has_meta_stream, "mcp stream: meta has stream type");
+    tap_ok(has_meta_sid, "mcp stream: meta has session_id");
+
+    if (ra.result_idx >= 0) {
+        tap_ok(strstr(ra.msgs[ra.result_idx], "stdout") == NULL, "mcp stream: result omits stdout");
+        tap_ok(strstr(ra.msgs[ra.result_idx], "exit_status") != NULL,
+               "mcp stream: has exit status");
+    } else {
+        tap_ok(0, "mcp stream: result omits stdout");
+        tap_ok(0, "mcp stream: has exit status");
+    }
+
+    mcp_recv_all_free(&ra);
+    mcp_stop(&m);
+}
+
+static void test_eval_stream_disabled(void)
+{
+    mcp_proc_t m = mcp_start();
+    mcp_handshake(&m);
+
+    mcp_send(&m, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
+                 "\"params\":{\"name\":\"opsh_session_create\",\"arguments\":{}}}");
+    char *resp = mcp_recv(&m);
+    free(resp);
+
+    mcp_send(&m, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
+                 "\"params\":{\"name\":\"opsh_session_eval\","
+                 "\"arguments\":{\"session_id\":1,\"source\":\"echo nostream\"}}}");
+    resp = mcp_recv(&m);
+    tap_ok(resp != NULL && strstr(resp, "nostream") != NULL, "mcp no-stream: has output in result");
+    tap_ok(resp != NULL && strstr(resp, "stdout") != NULL, "mcp no-stream: result has stdout key");
+    free(resp);
+
+    mcp_stop(&m);
+}
+
+static void test_eval_stream_stderr(void)
+{
+    mcp_proc_t m = mcp_start();
+    mcp_handshake(&m);
+
+    mcp_send(&m, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
+                 "\"params\":{\"name\":\"opsh_session_create\",\"arguments\":{}}}");
+    char *resp = mcp_recv(&m);
+    free(resp);
+
+    mcp_send(&m, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
+                 "\"params\":{\"name\":\"opsh_session_eval\","
+                 "\"arguments\":{\"session_id\":1,\"source\":\"echo err >&2\","
+                 "\"stream\":true}}}");
+    mcp_recv_all_t ra = mcp_recv_all(&m);
+
+    int found_stderr = 0;
+    for (int i = 0; i < ra.count; i++) {
+        if (i == ra.result_idx)
+            continue;
+        if (strstr(ra.msgs[i], "notifications/claude/channel") != NULL &&
+            strstr(ra.msgs[i], "\"content\":") != NULL && strstr(ra.msgs[i], "err\\n") != NULL &&
+            strstr(ra.msgs[i], "\"stream\":\"stderr\"") != NULL) {
+            found_stderr = 1;
+        }
+    }
+    tap_ok(found_stderr, "mcp stream stderr: notification has stderr data");
+
+    mcp_recv_all_free(&ra);
+    mcp_stop(&m);
+}
+
 int main(void)
 {
-    tap_plan(41);
+    tap_plan(53);
 
     test_initialize();
     test_ping();
@@ -333,6 +488,9 @@ int main(void)
     test_stdin_eof();
     test_signal_name_mapping();
     test_unknown_method();
+    test_eval_stream_basic();
+    test_eval_stream_disabled();
+    test_eval_stream_stderr();
 
     tap_done();
     return 0;

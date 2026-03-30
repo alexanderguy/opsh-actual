@@ -104,6 +104,40 @@ static int64_t get_nested_int(const char *msg, const char *key)
     return -1;
 }
 
+/* Same string-search approach as get_nested_int. Fragile against keys
+ * appearing inside string values, but consistent with the existing parsers. */
+static int get_nested_bool(const char *msg, const char *key)
+{
+    char search[128];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *p = strstr(msg, search);
+    if (p == NULL) {
+        return 0;
+    }
+    p += strlen(search);
+    while (*p == ' ' || *p == '\t' || *p == ':') {
+        p++;
+    }
+    if (strncmp(p, "true", 4) == 0) {
+        return 1;
+    }
+    return 0;
+}
+
+static void mcp_send_notification(FILE *out, const char *method, const char *params_json)
+{
+    strbuf_t buf;
+    strbuf_init(&buf);
+    json_begin_object(&buf);
+    json_key_string(&buf, "jsonrpc", "2.0");
+    json_key_string(&buf, "method", method);
+    strbuf_append_str(&buf, ",\"params\":");
+    strbuf_append_str(&buf, params_json);
+    json_end_object(&buf);
+    mcp_send_json(out, buf.contents);
+    strbuf_destroy(&buf);
+}
+
 static const struct {
     const char *name;
     int signum;
@@ -180,7 +214,8 @@ static const char tools_list_json[] =
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
     "\"session_id\":{\"type\":\"integer\",\"description\":\"Session ID\"},"
     "\"source\":{\"type\":\"string\",\"description\":\"Shell command to execute\"},"
-    "\"timeout_ms\":{\"type\":\"integer\",\"description\":\"Timeout in milliseconds\",\"default\":30000}"
+    "\"timeout_ms\":{\"type\":\"integer\",\"description\":\"Timeout in milliseconds\",\"default\":30000},"
+    "\"stream\":{\"type\":\"boolean\",\"description\":\"Stream output via notifications\",\"default\":false}"
     "},\"required\":[\"session_id\",\"source\"]}}"
 
     ",{\"name\":\"opsh_session_signal\","
@@ -217,6 +252,10 @@ static void handle_initialize(int64_t id)
     strbuf_append_str(&result, "\"tools\":");
     json_begin_object(&result);
     json_key_bool(&result, "listChanged", 0);
+    json_end_object(&result);
+    strbuf_append_str(&result, ",\"experimental\":");
+    json_begin_object(&result);
+    strbuf_append_str(&result, "\"claude/channel\":{}");
     json_end_object(&result);
     json_end_object(&result);
     strbuf_append_str(&result, ",\"serverInfo\":");
@@ -261,6 +300,35 @@ static void handle_tool_opsh_session_create(int64_t id, const char *msg)
     strbuf_destroy(&text);
 }
 
+typedef struct {
+    int session_id;
+    FILE *out;
+} mcp_stream_ctx_t;
+
+/* Callback invoked inline from the session_op_eval poll loop. The serve
+ * loop is single-threaded, so writes to out will not interleave with
+ * the final result (which is sent after session_op_eval returns). */
+static void mcp_stream_callback(const char *stream_name, const char *data, void *ctx)
+{
+    mcp_stream_ctx_t *sc = (mcp_stream_ctx_t *)ctx;
+
+    char sid_str[16];
+    snprintf(sid_str, sizeof(sid_str), "%d", sc->session_id);
+
+    strbuf_t params;
+    strbuf_init(&params);
+    json_begin_object(&params);
+    json_key_string(&params, "content", data);
+    strbuf_append_str(&params, ",\"meta\":");
+    json_begin_object(&params);
+    json_key_string(&params, "session_id", sid_str);
+    json_key_string(&params, "stream", stream_name);
+    json_end_object(&params);
+    json_end_object(&params);
+    mcp_send_notification(sc->out, "notifications/claude/channel", params.contents);
+    strbuf_destroy(&params);
+}
+
 static void handle_tool_opsh_session_eval(int64_t id, const char *msg)
 {
     if (ensure_sessions() != 0) {
@@ -275,11 +343,21 @@ static void handle_tool_opsh_session_eval(int64_t id, const char *msg)
 
     int64_t sid = get_nested_int(msg, "session_id");
     int64_t timeout_raw = get_nested_int(msg, "timeout_ms");
+    int stream = get_nested_bool(msg, "stream");
+
+    session_stream_cb cb = NULL;
+    mcp_stream_ctx_t sc;
+    if (stream) {
+        sc.session_id = (int)sid;
+        sc.out = stdout;
+        cb = mcp_stream_callback;
+    }
 
     session_eval_result_t result;
     char *error = NULL;
 
-    int rc = session_op_eval((int)sid, source, (int)timeout_raw, NULL, NULL, &result, &error);
+    int rc = session_op_eval((int)sid, source, (int)timeout_raw, cb, stream ? &sc : NULL, &result,
+                             &error);
     free(source);
     if (rc != 0) {
         mcp_send_tool_result(id, error, 1);
@@ -291,8 +369,10 @@ static void handle_tool_opsh_session_eval(int64_t id, const char *msg)
     strbuf_init(&text);
     json_begin_object(&text);
     json_key_int(&text, "exit_status", result.exit_status);
-    json_key_string(&text, "stdout", result.out_buf);
-    json_key_string(&text, "stderr", result.err_buf);
+    if (!stream) {
+        json_key_string(&text, "stdout", result.out_buf);
+        json_key_string(&text, "stderr", result.err_buf);
+    }
     if (result.truncated) {
         json_key_bool(&text, "truncated", 1);
     }
