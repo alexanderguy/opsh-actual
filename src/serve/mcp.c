@@ -473,6 +473,8 @@ int mcp_main(void)
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stdin, NULL, _IONBF, 0);
 
+    signal(SIGPIPE, SIG_IGN);
+
     sessions_initialized = 0;
 
     for (;;) {

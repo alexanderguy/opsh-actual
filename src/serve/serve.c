@@ -737,6 +737,8 @@ int serve_main(void)
         return 1;
     }
 
+    signal(SIGPIPE, SIG_IGN);
+
     for (;;) {
         char *msg = jsonrpc_read_message(stdin);
         if (msg == NULL) {
