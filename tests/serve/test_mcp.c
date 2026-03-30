@@ -153,14 +153,16 @@ static void test_tools_list(void)
     mcp_send(&m, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}");
     char *resp = mcp_recv(&m);
     tap_ok(resp != NULL, "tools/list: got response");
-    tap_ok(resp != NULL && strstr(resp, "session_create") != NULL,
-           "tools/list: has session_create");
-    tap_ok(resp != NULL && strstr(resp, "session_eval") != NULL, "tools/list: has session_eval");
-    tap_ok(resp != NULL && strstr(resp, "session_signal") != NULL,
-           "tools/list: has session_signal");
-    tap_ok(resp != NULL && strstr(resp, "session_destroy") != NULL,
-           "tools/list: has session_destroy");
-    tap_ok(resp != NULL && strstr(resp, "session_list") != NULL, "tools/list: has session_list");
+    tap_ok(resp != NULL && strstr(resp, "opsh_session_create") != NULL,
+           "tools/list: has opsh_session_create");
+    tap_ok(resp != NULL && strstr(resp, "opsh_session_eval") != NULL,
+           "tools/list: has opsh_session_eval");
+    tap_ok(resp != NULL && strstr(resp, "opsh_session_signal") != NULL,
+           "tools/list: has opsh_session_signal");
+    tap_ok(resp != NULL && strstr(resp, "opsh_session_destroy") != NULL,
+           "tools/list: has opsh_session_destroy");
+    tap_ok(resp != NULL && strstr(resp, "opsh_session_list") != NULL,
+           "tools/list: has opsh_session_list");
     tap_ok(resp != NULL && strstr(resp, "\"inputSchema\"") != NULL, "tools/list: has inputSchema");
     tap_ok(resp != NULL && strstr(resp, "\"required\"") != NULL, "tools/list: has required fields");
     free(resp);
@@ -175,7 +177,7 @@ static void test_session_create_eval(void)
 
     /* Create session */
     mcp_send(&m, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
-                 "\"params\":{\"name\":\"session_create\",\"arguments\":{}}}");
+                 "\"params\":{\"name\":\"opsh_session_create\",\"arguments\":{}}}");
     char *resp = mcp_recv(&m);
     tap_ok(resp != NULL, "create: got response");
     tap_ok(resp != NULL && strstr(resp, "session_id") != NULL, "create: has session_id in content");
@@ -185,7 +187,7 @@ static void test_session_create_eval(void)
 
     /* Eval echo */
     mcp_send(&m, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
-                 "\"params\":{\"name\":\"session_eval\","
+                 "\"params\":{\"name\":\"opsh_session_eval\","
                  "\"arguments\":{\"session_id\":1,\"source\":\"echo hello\"}}}");
     resp = mcp_recv(&m);
     tap_ok(resp != NULL, "eval: got response");
@@ -202,7 +204,7 @@ static void test_eval_nonexistent_session(void)
     mcp_handshake(&m);
 
     mcp_send(&m, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
-                 "\"params\":{\"name\":\"session_eval\","
+                 "\"params\":{\"name\":\"opsh_session_eval\","
                  "\"arguments\":{\"session_id\":999,\"source\":\"echo hi\"}}}");
     char *resp = mcp_recv(&m);
     tap_ok(resp != NULL, "eval nonexistent: got response");
@@ -274,13 +276,13 @@ static void test_signal_name_mapping(void)
 
     /* Create a session */
     mcp_send(&m, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
-                 "\"params\":{\"name\":\"session_create\",\"arguments\":{}}}");
+                 "\"params\":{\"name\":\"opsh_session_create\",\"arguments\":{}}}");
     char *resp = mcp_recv(&m);
     free(resp);
 
     /* Send SIGUSR1 to the session */
     mcp_send(&m, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
-                 "\"params\":{\"name\":\"session_signal\","
+                 "\"params\":{\"name\":\"opsh_session_signal\","
                  "\"arguments\":{\"session_id\":1,\"signal\":\"SIGUSR1\"}}}");
     resp = mcp_recv(&m);
     tap_ok(resp != NULL, "signal: got response");
@@ -290,7 +292,7 @@ static void test_signal_name_mapping(void)
 
     /* Try an invalid signal name */
     mcp_send(&m, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\","
-                 "\"params\":{\"name\":\"session_signal\","
+                 "\"params\":{\"name\":\"opsh_session_signal\","
                  "\"arguments\":{\"session_id\":1,\"signal\":\"SIGBOGUS\"}}}");
     resp = mcp_recv(&m);
     tap_ok(resp != NULL && strstr(resp, "\"isError\":true") != NULL,

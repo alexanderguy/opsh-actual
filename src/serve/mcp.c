@@ -169,13 +169,13 @@ static int msg_has_id(const char *msg)
 static const char tools_list_json[] =
     "{\"tools\":["
 
-    "{\"name\":\"session_create\","
+    "{\"name\":\"opsh_session_create\","
     "\"description\":\"Create a new shell session\","
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
     "\"cwd\":{\"type\":\"string\",\"description\":\"Working directory for the session\"}"
     "}}}"
 
-    ",{\"name\":\"session_eval\","
+    ",{\"name\":\"opsh_session_eval\","
     "\"description\":\"Evaluate a shell command in a session\","
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
     "\"session_id\":{\"type\":\"integer\",\"description\":\"Session ID\"},"
@@ -183,7 +183,7 @@ static const char tools_list_json[] =
     "\"timeout_ms\":{\"type\":\"integer\",\"description\":\"Timeout in milliseconds\",\"default\":30000}"
     "},\"required\":[\"session_id\",\"source\"]}}"
 
-    ",{\"name\":\"session_signal\","
+    ",{\"name\":\"opsh_session_signal\","
     "\"description\":\"Send a signal to a session process\","
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
     "\"session_id\":{\"type\":\"integer\",\"description\":\"Session ID\"},"
@@ -191,13 +191,13 @@ static const char tools_list_json[] =
     "\"enum\":[\"SIGHUP\",\"SIGINT\",\"SIGQUIT\",\"SIGTERM\",\"SIGKILL\",\"SIGUSR1\",\"SIGUSR2\"]}"
     "},\"required\":[\"session_id\",\"signal\"]}}"
 
-    ",{\"name\":\"session_destroy\","
+    ",{\"name\":\"opsh_session_destroy\","
     "\"description\":\"Destroy a shell session\","
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
     "\"session_id\":{\"type\":\"integer\",\"description\":\"Session ID\"}"
     "},\"required\":[\"session_id\"]}}"
 
-    ",{\"name\":\"session_list\","
+    ",{\"name\":\"opsh_session_list\","
     "\"description\":\"List active shell sessions\","
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}"
 
@@ -234,7 +234,7 @@ static void handle_tools_list(int64_t id)
     mcp_send_result(stdout, id, tools_list_json);
 }
 
-static void handle_tool_session_create(int64_t id, const char *msg)
+static void handle_tool_opsh_session_create(int64_t id, const char *msg)
 {
     if (ensure_sessions() != 0) {
         mcp_send_tool_result(id, "Failed to initialize session subsystem", 1);
@@ -261,7 +261,7 @@ static void handle_tool_session_create(int64_t id, const char *msg)
     strbuf_destroy(&text);
 }
 
-static void handle_tool_session_eval(int64_t id, const char *msg)
+static void handle_tool_opsh_session_eval(int64_t id, const char *msg)
 {
     if (ensure_sessions() != 0) {
         mcp_send_tool_result(id, "Failed to initialize session subsystem", 1);
@@ -302,7 +302,7 @@ static void handle_tool_session_eval(int64_t id, const char *msg)
     session_eval_result_destroy(&result);
 }
 
-static void handle_tool_session_signal(int64_t id, const char *msg)
+static void handle_tool_opsh_session_signal(int64_t id, const char *msg)
 {
     if (ensure_sessions() != 0) {
         mcp_send_tool_result(id, "Failed to initialize session subsystem", 1);
@@ -339,7 +339,7 @@ static void handle_tool_session_signal(int64_t id, const char *msg)
     mcp_send_tool_result(id, "Signal sent", 0);
 }
 
-static void handle_tool_session_destroy(int64_t id, const char *msg)
+static void handle_tool_opsh_session_destroy(int64_t id, const char *msg)
 {
     if (ensure_sessions() != 0) {
         mcp_send_tool_result(id, "Failed to initialize session subsystem", 1);
@@ -357,7 +357,7 @@ static void handle_tool_session_destroy(int64_t id, const char *msg)
     mcp_send_tool_result(id, "Session destroyed", 0);
 }
 
-static void handle_tool_session_list(int64_t id)
+static void handle_tool_opsh_session_list(int64_t id)
 {
     if (ensure_sessions() != 0) {
         mcp_send_tool_result(id, "Failed to initialize session subsystem", 1);
@@ -398,21 +398,21 @@ static void handle_tools_call(int64_t id, const char *msg)
         return;
     }
 
-    if (strcmp(name, "session_create") == 0) {
+    if (strcmp(name, "opsh_session_create") == 0) {
         free(name);
-        handle_tool_session_create(id, msg);
-    } else if (strcmp(name, "session_eval") == 0) {
+        handle_tool_opsh_session_create(id, msg);
+    } else if (strcmp(name, "opsh_session_eval") == 0) {
         free(name);
-        handle_tool_session_eval(id, msg);
-    } else if (strcmp(name, "session_signal") == 0) {
+        handle_tool_opsh_session_eval(id, msg);
+    } else if (strcmp(name, "opsh_session_signal") == 0) {
         free(name);
-        handle_tool_session_signal(id, msg);
-    } else if (strcmp(name, "session_destroy") == 0) {
+        handle_tool_opsh_session_signal(id, msg);
+    } else if (strcmp(name, "opsh_session_destroy") == 0) {
         free(name);
-        handle_tool_session_destroy(id, msg);
-    } else if (strcmp(name, "session_list") == 0) {
+        handle_tool_opsh_session_destroy(id, msg);
+    } else if (strcmp(name, "opsh_session_list") == 0) {
         free(name);
-        handle_tool_session_list(id);
+        handle_tool_opsh_session_list(id);
     } else {
         strbuf_t err;
         strbuf_init(&err);
